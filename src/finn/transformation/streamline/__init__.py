@@ -30,40 +30,41 @@ from pkgutil import extend_path
 
 __path__ = extend_path(__path__, __name__)
 
-from qonnx.transformation.base import Transformation
-from qonnx.transformation.batchnorm_to_affine import BatchNormToAffine
-from qonnx.transformation.general import (
-    ConvertDivToMul,
+from finn.transformation.base import Transformation
+from finn.transformation.infer_datatypes import InferDataTypes
+from finn.transformation.general import (
     ConvertSubToAdd,
+    ConvertDivToMul,
     GiveReadableTensorNames,
     GiveUniqueNodeNames,
 )
-from qonnx.transformation.infer_datatypes import InferDataTypes
-from qonnx.transformation.remove import RemoveIdentityOps
 
 from finn.transformation.streamline.absorb import (
-    Absorb1BitMulIntoConv,
-    Absorb1BitMulIntoMatMul,
     AbsorbAddIntoMultiThreshold,
     AbsorbMulIntoMultiThreshold,
-    AbsorbSignBiasIntoMultiThreshold,
     FactorOutMulSignMagnitude,
+    Absorb1BitMulIntoMatMul,
+    Absorb1BitMulIntoConv,
+    AbsorbSignBiasIntoMultiThreshold,
 )
+
 from finn.transformation.streamline.collapse_repeated import (
     CollapseRepeatedAdd,
     CollapseRepeatedMul,
 )
+
 from finn.transformation.streamline.reorder import (
-    MoveAddPastConv,
     MoveAddPastMul,
-    MoveMulPastMaxPool,
-    MoveScalarAddPastMatMul,
-    MoveScalarLinearPastInvariants,
-    MoveScalarMulPastConv,
     MoveScalarMulPastMatMul,
+    MoveScalarAddPastMatMul,
+    MoveAddPastConv,
+    MoveScalarMulPastConv,
 )
+
 from finn.transformation.streamline.round_thresholds import RoundAndClipThresholds
 from finn.transformation.streamline.sign_to_thres import ConvertSignToThres
+from finn.transformation.batchnorm_to_affine import BatchNormToAffine
+from finn.transformation.streamline.remove import RemoveIdentityOps
 
 
 class Streamline(Transformation):
@@ -75,8 +76,6 @@ class Streamline(Transformation):
             ConvertDivToMul(),
             BatchNormToAffine(),
             ConvertSignToThres(),
-            MoveMulPastMaxPool(),
-            MoveScalarLinearPastInvariants(),
             AbsorbSignBiasIntoMultiThreshold(),
             MoveAddPastMul(),
             MoveScalarAddPastMatMul(),
@@ -86,7 +85,6 @@ class Streamline(Transformation):
             MoveAddPastMul(),
             CollapseRepeatedAdd(),
             CollapseRepeatedMul(),
-            MoveMulPastMaxPool(),
             AbsorbAddIntoMultiThreshold(),
             FactorOutMulSignMagnitude(),
             AbsorbMulIntoMultiThreshold(),

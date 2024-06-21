@@ -26,34 +26,27 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-import pytest
-
-import importlib_resources as importlib
+import brevitas.onnx as bo
 import numpy as np
-import torch
-from brevitas.export import export_qonnx
-from qonnx.core.modelwrapper import ModelWrapper
-from qonnx.transformation.fold_constants import FoldConstants
-from qonnx.transformation.general import (
-    GiveReadableTensorNames,
-    GiveUniqueNodeNames,
-    GiveUniqueParameterTensors,
-    RemoveStaticGraphInputs,
-    RemoveUnusedTensors,
-)
-from qonnx.transformation.infer_shapes import InferShapes
-from qonnx.util.cleanup import cleanup as qonnx_cleanup
+import pytest
+import pkg_resources as pk
 
 import finn.core.onnx_exec as oxe
-from finn.transformation.qonnx.convert_qonnx_to_finn import ConvertQONNXtoFINN
+from finn.core.modelwrapper import ModelWrapper
+from finn.transformation.fold_constants import FoldConstants
+from finn.transformation.general import (
+    RemoveUnusedTensors,
+    RemoveStaticGraphInputs,
+    GiveReadableTensorNames,
+    GiveUniqueNodeNames,
+)
+from finn.transformation.infer_shapes import InferShapes
 from finn.transformation.streamline import Streamline
-from finn.util.basic import make_build_dir
 from finn.util.test import get_test_model_trained
+from finn.util.basic import make_build_dir
 
 export_onnx_path = make_build_dir("test_streamline_cnv_")
 
-
-@pytest.mark.streamline
 # act bits
 @pytest.mark.parametrize("abits", [1, 2])
 # weight bits
@@ -66,20 +59,16 @@ def test_streamline_cnv(size, wbits, abits):
     nname = "%s_%dW%dA" % (size, wbits, abits)
     finn_onnx = export_onnx_path + "/%s.onnx" % nname
     fc = get_test_model_trained(size, wbits, abits)
-    export_qonnx(fc, torch.randn(1, 3, 32, 32), finn_onnx)
-    qonnx_cleanup(finn_onnx, out_file=finn_onnx)
+    bo.export_finn_onnx(fc, (1, 3, 32, 32), finn_onnx)
     model = ModelWrapper(finn_onnx)
-    model = model.transform(ConvertQONNXtoFINN())
     model = model.transform(InferShapes())
     model = model.transform(FoldConstants())
     model = model.transform(GiveUniqueNodeNames())
-    model = model.transform(GiveUniqueParameterTensors())
     model = model.transform(GiveReadableTensorNames())
     model = model.transform(RemoveStaticGraphInputs())
     # load one of the test vectors
-    ref = importlib.files("finn.qnn-data") / "cifar10/cifar10-test-data-class3.npz"
-    with importlib.as_file(ref) as fn:
-        input_tensor = np.load(fn)["arr_0"].astype(np.float32)
+    fn = pk.resource_filename("finn.qnn-data", "cifar10/cifar10-test-data-class3.npz")
+    input_tensor = np.load(fn)["arr_0"].astype(np.float32)
     input_tensor = input_tensor / 255
     assert input_tensor.shape == (1, 3, 32, 32)
     # run using FINN-based execution

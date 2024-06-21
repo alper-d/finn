@@ -29,18 +29,15 @@ import pytest
 
 import numpy as np
 from onnx import TensorProto, helper
-from qonnx.core.modelwrapper import ModelWrapper
-from qonnx.transformation.general import GiveReadableTensorNames, GiveUniqueNodeNames
-from qonnx.transformation.infer_datatypes import InferDataTypes
-from qonnx.transformation.infer_shapes import InferShapes
-from qonnx.transformation.insert_topk import InsertTopK
-from qonnx.util.basic import qonnx_make_model
 
-import finn.core.onnx_exec as oxe
+from finn.core.modelwrapper import ModelWrapper
+from finn.transformation.infer_shapes import InferShapes
+from finn.transformation.infer_datatypes import InferDataTypes
+from finn.transformation.general import GiveUniqueNodeNames, GiveReadableTensorNames
+from finn.transformation.insert_topk import InsertTopK
 from finn.transformation.streamline.absorb import AbsorbScalarMulAddIntoTopK
+import finn.core.onnx_exec as oxe
 
-
-@pytest.mark.streamline
 # parameter to indicate if mul parameter is negative or positive
 @pytest.mark.parametrize("mul_positive", [True, False])
 # parameter to indicate if mul parameter is scalar or not
@@ -66,17 +63,23 @@ def test_absorb_mul_into_topk(mul_positive, scalar):
         value_info=[a0, b0, c0],
     )
 
-    model = qonnx_make_model(mul_graph, producer_name="mul_model")
+    model = helper.make_model(mul_graph, producer_name="mul_model")
     model = ModelWrapper(model)
     # initialize values
     # for mul
     if mul_positive is True:
-        a0_values = np.random.uniform(low=0.1, high=1, size=tuple(shape)).astype(np.float32)
+        a0_values = np.random.uniform(low=0.1, high=1, size=tuple(shape)).astype(
+            np.float32
+        )
     else:
-        a0_values = np.random.uniform(low=-1, high=-0.1, size=tuple(shape)).astype(np.float32)
+        a0_values = np.random.uniform(low=-1, high=-0.1, size=tuple(shape)).astype(
+            np.float32
+        )
     model.set_initializer("a0", a0_values)
     # for add
-    c0_values = np.random.uniform(low=-1, high=-0.1, size=tuple(shape)).astype(np.float32)
+    c0_values = np.random.uniform(low=-1, high=-0.1, size=tuple(shape)).astype(
+        np.float32
+    )
     model.set_initializer("c0", c0_values)
     model = model.transform(InsertTopK())
     model = model.transform(InferShapes())
@@ -86,7 +89,9 @@ def test_absorb_mul_into_topk(mul_positive, scalar):
     model_transformed = model.transform(AbsorbScalarMulAddIntoTopK())
 
     # compare execution results
-    inp_values = np.random.uniform(low=-10, high=10, size=(1, 1, 1, 1000)).astype(np.float32)
+    inp_values = np.random.uniform(low=-10, high=10, size=(1, 1, 1, 1000)).astype(
+        np.float32
+    )
     idict = {"global_in": inp_values}
     odict = oxe.execute_onnx(model, idict, True)
     y_indices = odict["global_out"]

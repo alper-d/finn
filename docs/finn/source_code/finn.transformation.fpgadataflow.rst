@@ -38,10 +38,10 @@ finn.transformation.fpgadataflow.compile\_cppsim
    :undoc-members:
    :show-inheritance:
 
-finn.transformation.fpgadataflow.convert\_to\_hw\_layers
-----------------------------------------------------------
+finn.transformation.fpgadataflow.convert\_to\_hls\_layers
+----------------------------------------------------------------
 
-.. automodule:: finn.transformation.fpgadataflow.convert_to_hw_layers
+.. automodule:: finn.transformation.fpgadataflow.convert_to_hls_layers
    :members:
    :undoc-members:
    :show-inheritance:
@@ -62,42 +62,19 @@ finn.transformation.fpgadataflow.create\_stitched\_ip
    :undoc-members:
    :show-inheritance:
 
-finn.transformation.fpgadataflow.derive\_characteristic
-------------------------------------------------------------
-
-.. automodule:: finn.transformation.fpgadataflow.derive_characteristic
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-finn.transformation.fpgadataflow.externalize\_params
-------------------------------------------------------------
-
-.. automodule:: finn.transformation.fpgadataflow.externalize_params
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
 finn.transformation.fpgadataflow.floorplan
------------------------------------------------
+----------------------------------------------------
 
 .. automodule:: finn.transformation.fpgadataflow.floorplan
   :members:
   :undoc-members:
   :show-inheritance:
 
+
 finn.transformation.fpgadataflow.hlssynth\_ip
------------------------------------------------
+----------------------------------------------------
 
 .. automodule:: finn.transformation.fpgadataflow.hlssynth_ip
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-finn.transformation.fpgadataflow.infer\_pixel\_padding\_deconv
-----------------------------------------------------------------
-
-.. automodule:: finn.transformation.fpgadataflow.infer_pixel_padding_deconv
    :members:
    :undoc-members:
    :show-inheritance:
@@ -118,17 +95,6 @@ finn.transformation.fpgadataflow.insert\_fifo
    :undoc-members:
    :show-inheritance:
 
-
-finn.transformation.fpgadataflow.insert\_hook
-----------------------------------------------------
-
-.. automodule:: finn.transformation.fpgadataflow.insert_hook
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-
-
 finn.transformation.fpgadataflow.insert\_iodma
 ----------------------------------------------------
 
@@ -142,6 +108,14 @@ finn.transformation.fpgadataflow.insert\_tlastmarker
 -----------------------------------------------------------
 
 .. automodule:: finn.transformation.fpgadataflow.insert_tlastmarker
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+finn.transformation.fpgadataflow.make\_deployment
+--------------------------------------------------------
+
+.. automodule:: finn.transformation.fpgadataflow.make_deployment
    :members:
    :undoc-members:
    :show-inheritance:
@@ -167,15 +141,6 @@ finn.transformation.fpgadataflow.minimize\_accumulator\_width
 --------------------------------------------------------------
 
 .. automodule:: finn.transformation.fpgadataflow.minimize_accumulator_width
-  :members:
-  :undoc-members:
-  :show-inheritance:
-
-
-finn.transformation.fpgadataflow.minimize\_weight\_bit\_width
---------------------------------------------------------------
-
-.. automodule:: finn.transformation.fpgadataflow.minimize_weight_bit_width
   :members:
   :undoc-members:
   :show-inheritance:
@@ -237,16 +202,8 @@ finn.transformation.fpgadataflow.set\_folding
   :undoc-members:
   :show-inheritance:
 
-finn.transformation.fpgadataflow.specialize\_layers
--------------------------------------------------------
-
-.. automodule:: finn.transformation.fpgadataflow.specialize_layers
-  :members:
-  :undoc-members:
-  :show-inheritance:
-
 finn.transformation.fpgadataflow.synth\_ooc
----------------------------------------------
+-------------------------------------------------------
 
 .. automodule:: finn.transformation.fpgadataflow.synth_ooc
   :members:
@@ -254,7 +211,7 @@ finn.transformation.fpgadataflow.synth\_ooc
   :show-inheritance:
 
 finn.transformation.fpgadataflow.template\_driver
----------------------------------------------------
+-------------------------------------------------
 
 .. automodule:: finn.transformation.fpgadataflow.template_driver
    :members:
@@ -262,7 +219,7 @@ finn.transformation.fpgadataflow.template\_driver
    :show-inheritance:
 
 finn.transformation.fpgadataflow.templates
------------------------------------------------
+-------------------------------------------------
 
 .. automodule:: finn.transformation.fpgadataflow.templates
   :members:

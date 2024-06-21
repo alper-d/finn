@@ -26,24 +26,22 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-import pytest
-
-import importlib_resources as importlib
-import numpy as np
 import onnx
 import onnx.numpy_helper as nph
-import os
-import torchvision.transforms.functional as torchvision_util
-import warnings
-from brevitas_examples import bnn_pynq, imagenet_classification
+import pkg_resources as pk
 from pkgutil import get_data
-from qonnx.core.modelwrapper import ModelWrapper
-from qonnx.custom_op.registry import getCustomOp
-
-from finn.core.onnx_exec import execute_onnx
+from brevitas_examples import bnn_pynq, imagenet_classification
+import numpy as np
+import pytest
+import warnings
+from finn.core.modelwrapper import ModelWrapper
+import os
+from finn.util.basic import pynq_part_map, alveo_part_map, alveo_default_platform
 from finn.transformation.fpgadataflow.make_zynq_proj import ZynqBuild
 from finn.transformation.fpgadataflow.vitis_build import VitisBuild, VitisOptStrategy
-from finn.util.basic import alveo_default_platform, alveo_part_map, pynq_part_map
+from finn.custom_op.registry import getCustomOp
+from finn.core.onnx_exec import execute_onnx
+import torchvision.transforms.functional as torchvision_util
 
 # map of (wbits,abits) -> model
 example_map = {
@@ -90,8 +88,8 @@ def soft_verify_topk(invec, idxvec, k):
     """Check that the topK indices provided actually point to the topK largest
     values in the input vector"""
     np_topk = np.flip(invec.flatten().argsort())[:k]
-    soft_expected = invec.flatten()[np_topk.astype(np.int_).flatten()]
-    soft_produced = invec.flatten()[idxvec.astype(np.int_).flatten()]
+    soft_expected = invec.flatten()[np_topk.astype(np.int).flatten()]
+    soft_produced = invec.flatten()[idxvec.astype(np.int).flatten()]
     return (soft_expected == soft_produced).all()
 
 
@@ -105,26 +103,37 @@ def load_test_checkpoint_or_skip(filename):
         pytest.skip(filename + " not found from previous test step, skipping")
 
 
-def get_build_env(board, target_clk_ns):
+def get_build_env(kind, target_clk_ns):
     """Get board-related build environment for testing.
-    - board = any from pynq_part_map or alveo_part_map
+    - kind = either zynq or alveo.
     """
     ret = {}
-    if board in pynq_part_map:
-        ret["kind"] = "zynq"
-        ret["part"] = pynq_part_map[board]
-        ret["build_fxn"] = ZynqBuild(board, target_clk_ns)
-    elif board in alveo_part_map:
-        ret["kind"] = "alveo"
-        ret["part"] = alveo_part_map[board]
+    if kind == "zynq":
+        ret["board"] = os.getenv("PYNQ_BOARD", default="Pynq-Z1")
+        ret["part"] = pynq_part_map[ret["board"]]
+        ret["ip"] = os.getenv("PYNQ_IP", "")
+        ret["username"] = os.getenv("PYNQ_USERNAME", "xilinx")
+        ret["password"] = os.getenv("PYNQ_PASSWORD", "xilinx")
+        ret["port"] = os.getenv("PYNQ_PORT", 22)
+        ret["target_dir"] = os.getenv("PYNQ_TARGET_DIR", "/home/xilinx/finn")
+        ret["build_fxn"] = ZynqBuild(ret["board"], target_clk_ns)
+    elif kind == "alveo":
+        ret["board"] = os.getenv("ALVEO_BOARD", default="U250")
+        ret["part"] = alveo_part_map[ret["board"]]
+        ret["platform"] = alveo_default_platform[ret["board"]]
+        ret["ip"] = os.getenv("ALVEO_IP", "")
+        ret["username"] = os.getenv("ALVEO_USERNAME", "")
+        ret["password"] = os.getenv("ALVEO_PASSWORD", "")
+        ret["port"] = os.getenv("ALVEO_PORT", 22)
+        ret["target_dir"] = os.getenv("ALVEO_TARGET_DIR", "/tmp/finn_alveo_deploy")
         ret["build_fxn"] = VitisBuild(
             ret["part"],
             target_clk_ns,
-            alveo_default_platform[board],
+            ret["platform"],
             strategy=VitisOptStrategy.BUILD_SPEED,
         )
     else:
-        raise Exception("Unknown board specified")
+        raise Exception("Unknown test build environment spec")
     return ret
 
 
@@ -132,13 +141,14 @@ def get_example_input(topology):
     "Get example numpy input tensor for given topology."
 
     if "fc" in topology:
-        raw_i = get_data("qonnx.data", "onnx/mnist-conv/test_data_set_0/input_0.pb")
+        raw_i = get_data("finn.data", "onnx/mnist-conv/test_data_set_0/input_0.pb")
         onnx_tensor = onnx.load_tensor_from_string(raw_i)
         return nph.to_array(onnx_tensor)
     elif topology == "cnv":
-        ref = importlib.files("finn.qnn-data") / "cifar10/cifar10-test-data-class3.npz"
-        with importlib.as_file(ref) as fn:
-            input_tensor = np.load(fn)["arr_0"].astype(np.float32)
+        fn = pk.resource_filename(
+            "finn.qnn-data", "cifar10/cifar10-test-data-class3.npz"
+        )
+        input_tensor = np.load(fn)["arr_0"].astype(np.float32)
         return input_tensor
     else:
         raise Exception("Unknown topology, can't return example input")
@@ -149,7 +159,6 @@ def get_trained_network_and_ishape(topology, wbits, abits):
 
     topology_to_ishape = {
         "tfc": (1, 1, 28, 28),
-        "lfc": (1, 1, 28, 28),
         "cnv": (1, 3, 32, 32),
     }
     ishape = topology_to_ishape[topology]
@@ -167,7 +176,6 @@ def execute_parent(parent_path, child_path, input_tensor_npy, return_full_ctx=Fa
     sdp_node = parent_model.get_nodes_by_op_type("StreamingDataflowPartition")[0]
     sdp_node = getCustomOp(sdp_node)
     sdp_node.set_nodeattr("model", child_path)
-    sdp_node.set_nodeattr("return_full_exec_context", 1 if return_full_ctx else 0)
     ret = execute_onnx(parent_model, {iname: input_tensor_npy}, True)
     if return_full_ctx:
         return ret

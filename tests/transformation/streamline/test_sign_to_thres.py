@@ -26,40 +26,33 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-import pytest
+import os
+from pkgutil import get_data
 
+import brevitas.onnx as bo
 import onnx
 import onnx.numpy_helper as nph
-import os
-import torch
-from brevitas.export import export_qonnx
-from pkgutil import get_data
-from qonnx.core.modelwrapper import ModelWrapper
-from qonnx.transformation.fold_constants import FoldConstants
-from qonnx.transformation.infer_shapes import InferShapes
-from qonnx.util.cleanup import cleanup as qonnx_cleanup
 
 import finn.core.onnx_exec as oxe
-from finn.transformation.qonnx.convert_qonnx_to_finn import ConvertQONNXtoFINN
+from finn.core.modelwrapper import ModelWrapper
+from finn.transformation.fold_constants import FoldConstants
+from finn.transformation.infer_shapes import InferShapes
 from finn.transformation.streamline import ConvertSignToThres
 from finn.util.test import get_test_model_trained
 
 export_onnx_path = "test_sign_to_thres.onnx"
 
 
-@pytest.mark.streamline
 def test_sign_to_thres():
     lfc = get_test_model_trained("LFC", 1, 1)
-    export_qonnx(lfc, torch.randn(1, 1, 28, 28), export_onnx_path)
-    qonnx_cleanup(export_onnx_path, out_file=export_onnx_path)
+    bo.export_finn_onnx(lfc, (1, 1, 28, 28), export_onnx_path)
     model = ModelWrapper(export_onnx_path)
-    model = model.transform(ConvertQONNXtoFINN())
     model = model.transform(InferShapes())
     model = model.transform(FoldConstants())
     new_model = model.transform(ConvertSignToThres())
     assert new_model.graph.node[3].op_type == "MultiThreshold"
     # load one of the test vectors
-    raw_i = get_data("qonnx.data", "onnx/mnist-conv/test_data_set_0/input_0.pb")
+    raw_i = get_data("finn.data", "onnx/mnist-conv/test_data_set_0/input_0.pb")
     input_tensor = onnx.load_tensor_from_string(raw_i)
     input_dict = {"0": nph.to_array(input_tensor)}
     assert oxe.compare_execution(model, new_model, input_dict)

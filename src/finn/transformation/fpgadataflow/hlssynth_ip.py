@@ -1,5 +1,4 @@
-# Copyright (C) 2020, Xilinx, Inc.
-# Copyright (C) 2024, Advanced Micro Devices, Inc.
+# Copyright (c) 2020, Xilinx
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -28,22 +27,21 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import os
-import qonnx.custom_op.registry as registry
+import finn.custom_op.registry as registry
+from finn.util.fpgadataflow import is_fpgadataflow_node
+from finn.transformation.base import NodeLocalTransformation
 import warnings
-from qonnx.transformation.base import NodeLocalTransformation
-
-from finn.util.fpgadataflow import is_hls_node
 
 
 class HLSSynthIP(NodeLocalTransformation):
-    """For each HLS node: generate IP block from code in folder
+    """For each node: generate IP block from code in folder
     that is referenced in node attribute "code_gen_dir_ipgen"
     and save path of generated project in node attribute "ipgen_path".
     All nodes in the graph must have the fpgadataflow backend attribute.
     Any nodes that already have a ipgen_path attribute pointing to a valid path
     will be skipped.
 
-    This transformation calls Vitis HLS for synthesis, so it will run for
+    This transformation calls Vivado HLS for synthesis, so it will run for
     some time (minutes to hours depending on configuration).
 
     * num_workers (int or None) number of parallel workers, see documentation in
@@ -55,7 +53,7 @@ class HLSSynthIP(NodeLocalTransformation):
 
     def applyNodeLocal(self, node):
         op_type = node.op_type
-        if is_hls_node(node):
+        if is_fpgadataflow_node(node) is True:
             try:
                 # lookup op_type in registry of CustomOps
                 inst = registry.getCustomOp(node)
@@ -65,9 +63,7 @@ class HLSSynthIP(NodeLocalTransformation):
                 ), """Node
                 attribute "code_gen_dir_ipgen" is empty. Please run
                 transformation PrepareIP first."""
-                if not os.path.isdir(inst.get_nodeattr("ipgen_path")) or not inst.get_nodeattr(
-                    "code_gen_dir_ipgen"
-                ) in inst.get_nodeattr("ipgen_path"):
+                if not os.path.isdir(inst.get_nodeattr("ipgen_path")):
                     # call the compilation function for this node
                     inst.ipgen_singlenode_code()
                 else:
@@ -80,5 +76,7 @@ class HLSSynthIP(NodeLocalTransformation):
                 is empty."""
             except KeyError:
                 # exception if op_type is not supported
-                raise Exception("Custom op_type %s is currently not supported." % op_type)
+                raise Exception(
+                    "Custom op_type %s is currently not supported." % op_type
+                )
         return (node, False)

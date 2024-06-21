@@ -26,19 +26,15 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-import pytest
-
 from onnx import TensorProto, helper
-from qonnx.core.datatype import DataType
-from qonnx.core.modelwrapper import ModelWrapper
-from qonnx.transformation.general import GiveUniqueNodeNames
-from qonnx.util.basic import qonnx_make_model
 
 from finn.analysis.fpgadataflow.res_estimation import (
     res_estimation,
     res_estimation_complete,
 )
-from finn.transformation.fpgadataflow.specialize_layers import SpecializeLayers
+from finn.core.datatype import DataType
+from finn.core.modelwrapper import ModelWrapper
+from finn.transformation.general import GiveUniqueNodeNames
 
 
 def check_two_dict_for_equality(dict1, dict2):
@@ -54,14 +50,13 @@ def check_two_dict_for_equality(dict1, dict2):
     return True
 
 
-@pytest.mark.fpgadataflow
 def test_res_estimate():
     mw = mh = 4
     simd = 1
     pe = 1
-    idt = DataType["INT2"]
-    wdt = DataType["INT2"]
-    odt = DataType["INT2"]
+    idt = DataType.INT2
+    wdt = DataType.INT2
+    odt = DataType.INT2
     actval = odt.min()
 
     inp = helper.make_tensor_value_info("inp", TensorProto.FLOAT, [1, mw])
@@ -69,7 +64,7 @@ def test_res_estimate():
     node_inp_list = ["inp", "weights", "thresh"]
 
     FCLayer_node = helper.make_node(
-        "MVAU",
+        "StreamingFCLayer_Batch",
         node_inp_list,
         ["outp"],
         domain="finn.custom_op.fpgadataflow",
@@ -89,21 +84,20 @@ def test_res_estimate():
         nodes=[FCLayer_node], name="fclayer_graph", inputs=[inp], outputs=[outp]
     )
 
-    model = qonnx_make_model(graph, producer_name="fclayer-model")
+    model = helper.make_model(graph, producer_name="fclayer-model")
     model = ModelWrapper(model)
 
     model.set_tensor_datatype("inp", idt)
     model.set_tensor_datatype("outp", odt)
     model.set_tensor_datatype("weights", wdt)
 
-    model.transform(SpecializeLayers())
     model = model.transform(GiveUniqueNodeNames())
     prod_resource_estimation = model.analysis(res_estimation)
     expect_resource_estimation = {
-        "MVAU_hls_0": {
+        "StreamingFCLayer_Batch_0": {
             "BRAM_18K": 0,
             "BRAM_efficiency": 1,
-            "LUT": 317,
+            "LUT": 357,
             "DSP": 0,
             "URAM_efficiency": 1,
             "URAM": 0,
@@ -117,11 +111,11 @@ def test_res_estimate():
 
     prod_resource_estimation = model.analysis(res_estimation_complete)
     expect_resource_estimation = {
-        "MVAU_hls_0": [
+        "StreamingFCLayer_Batch_0": [
             {
                 "BRAM_18K": 0,
                 "BRAM_efficiency": 1,
-                "LUT": 313,
+                "LUT": 352,
                 "DSP": 1,
                 "URAM": 0,
                 "URAM_efficiency": 1,
@@ -129,7 +123,7 @@ def test_res_estimate():
             {
                 "BRAM_18K": 0,
                 "BRAM_efficiency": 1,
-                "LUT": 317,
+                "LUT": 357,
                 "DSP": 0,
                 "URAM": 0,
                 "URAM_efficiency": 1,

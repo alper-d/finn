@@ -1,5 +1,4 @@
-# Copyright (C) 2020, Xilinx, Inc.
-# Copyright (C) 2024, Advanced Micro Devices, Inc.
+# Copyright (c) 2020, Xilinx
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -27,13 +26,12 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-import qonnx.custom_op.registry as registry
-from qonnx.transformation.base import NodeLocalTransformation
-
+import finn.custom_op.registry as registry
+from finn.util.fpgadataflow import is_fpgadataflow_node
 from finn.transformation.fpgadataflow.replace_verilog_relpaths import (
     ReplaceVerilogRelPaths,
 )
-from finn.util.fpgadataflow import is_hls_node, is_rtl_node
+from finn.transformation.base import NodeLocalTransformation
 
 try:
     from pyverilator import PyVerilator
@@ -64,7 +62,7 @@ class PrepareRTLSim(NodeLocalTransformation):
 
     def applyNodeLocal(self, node):
         op_type = node.op_type
-        if is_hls_node(node) or is_rtl_node(node):
+        if is_fpgadataflow_node(node) is True:
             try:
                 # lookup op_type in registry of CustomOps
                 inst = registry.getCustomOp(node)
@@ -75,5 +73,7 @@ class PrepareRTLSim(NodeLocalTransformation):
                 ), "Failed to prepare RTLSim, no rtlsim_so attribute found."
             except KeyError:
                 # exception if op_type is not supported
-                raise Exception("Custom op_type %s is currently not supported." % op_type)
+                raise Exception(
+                    "Custom op_type %s is currently not supported." % op_type
+                )
         return (node, False)

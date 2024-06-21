@@ -1,5 +1,4 @@
-# Copyright (c) 2020-2022, Xilinx
-# Copyright (C) 2023, Advanced Micro Devices, Inc.
+# Copyright (c) 2020, Xilinx
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -28,31 +27,30 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import pytest
-
 import numpy as np
+
 from onnx import TensorProto, helper
-from qonnx.core.datatype import DataType
-from qonnx.core.modelwrapper import ModelWrapper
-from qonnx.transformation.general import GiveUniqueNodeNames
-from qonnx.util.basic import gen_finn_dt_tensor, qonnx_make_model
 
 import finn.core.onnx_exec as oxe
+from finn.core.datatype import DataType
+from finn.core.modelwrapper import ModelWrapper
+from finn.transformation.fpgadataflow.prepare_ip import PrepareIP
+from finn.transformation.fpgadataflow.prepare_cppsim import PrepareCppSim
 from finn.transformation.fpgadataflow.compile_cppsim import CompileCppSim
 from finn.transformation.fpgadataflow.hlssynth_ip import HLSSynthIP
-from finn.transformation.fpgadataflow.prepare_cppsim import PrepareCppSim
-from finn.transformation.fpgadataflow.prepare_ip import PrepareIP
-from finn.transformation.fpgadataflow.prepare_rtlsim import PrepareRTLSim
 from finn.transformation.fpgadataflow.set_exec_mode import SetExecMode
-from finn.transformation.fpgadataflow.specialize_layers import SpecializeLayers
+from finn.transformation.general import GiveUniqueNodeNames
+from finn.transformation.fpgadataflow.prepare_rtlsim import PrepareRTLSim
+from finn.util.basic import gen_finn_dt_tensor
 from finn.util.test import soft_verify_topk
 
 
-def make_labelselect_modelwrapper(labels, pe, k, idt, impl_style):
+def make_labelselect_modelwrapper(labels, pe, k, idt):
     inp = helper.make_tensor_value_info("inp", TensorProto.FLOAT, [1, labels])
-    outp = helper.make_tensor_value_info("outp", TensorProto.INT64, [1, k])
+    outp = helper.make_tensor_value_info("outp", TensorProto.FLOAT, [1, k])
 
     labelselect_node = helper.make_node(
-        "LabelSelect",
+        "LabelSelect_Batch",
         ["inp"],
         ["outp"],
         domain="finn.custom_op.fpgadataflow",
@@ -61,16 +59,12 @@ def make_labelselect_modelwrapper(labels, pe, k, idt, impl_style):
         PE=pe,
         K=k,
         inputDataType=idt.name,
-        preferred_impl_style=impl_style,
     )
     graph = helper.make_graph(
-        nodes=[labelselect_node],
-        name="graph",
-        inputs=[inp],
-        outputs=[outp],
+        nodes=[labelselect_node], name="graph", inputs=[inp], outputs=[outp],
     )
 
-    model = qonnx_make_model(graph, producer_name="thresholding-model")
+    model = helper.make_model(graph, producer_name="thresholding-model")
     model = ModelWrapper(model)
 
     model.set_tensor_datatype("inp", idt)
@@ -84,7 +78,7 @@ def prepare_inputs(input_tensor, idt):
     return {"inp": input_tensor}
 
 
-@pytest.mark.parametrize("idt", [DataType["UINT8"], DataType["UINT16"], DataType["INT16"]])
+@pytest.mark.parametrize("idt", [DataType.UINT8, DataType.UINT16, DataType.INT16])
 # labels
 @pytest.mark.parametrize("labels", [10, 100])
 # folding
@@ -93,11 +87,8 @@ def prepare_inputs(input_tensor, idt):
 @pytest.mark.parametrize("k", [1, 5])
 # execution mode
 @pytest.mark.parametrize("exec_mode", ["cppsim", "rtlsim"])
-# impl style
-@pytest.mark.parametrize("impl_style", ["hls"])
-@pytest.mark.fpgadataflow
 @pytest.mark.vivado
-def test_fpgadataflow_labelselect(idt, labels, fold, k, exec_mode, impl_style):
+def test_fpgadataflow_labelselect(idt, labels, fold, k, exec_mode):
     np.random.seed(0)
     if fold == -1:
         pe = 1
@@ -110,15 +101,8 @@ def test_fpgadataflow_labelselect(idt, labels, fold, k, exec_mode, impl_style):
 
     # generate input data
     x = gen_finn_dt_tensor(idt, (1, labels))
-    input_dict = prepare_inputs(x, idt)
 
-    model = make_labelselect_modelwrapper(labels, pe, k, idt, impl_style)
-
-    y = oxe.execute_onnx(model, input_dict)["outp"]
-
-    assert soft_verify_topk(x, y, k), "HW layer execution failed"
-
-    model = model.transform(SpecializeLayers())
+    model = make_labelselect_modelwrapper(labels, pe, k, idt)
 
     if exec_mode == "cppsim":
         model = model.transform(PrepareCppSim())
@@ -133,6 +117,8 @@ def test_fpgadataflow_labelselect(idt, labels, fold, k, exec_mode, impl_style):
     else:
         raise Exception("Unknown exec_mode")
 
+    # prepare input data and execute
+    input_dict = prepare_inputs(x, idt)
     y = oxe.execute_onnx(model, input_dict)["outp"]
 
     assert soft_verify_topk(x, y, k), exec_mode + " failed"

@@ -27,24 +27,23 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import pytest
-
 import numpy as np
 from onnx import TensorProto, helper
-from qonnx.core.datatype import DataType
-from qonnx.core.modelwrapper import ModelWrapper
-from qonnx.custom_op.registry import getCustomOp
-from qonnx.transformation.general import GiveUniqueNodeNames
-from qonnx.util.basic import qonnx_make_model
 
+from finn.custom_op.registry import getCustomOp
+from finn.core.datatype import DataType
 from finn.analysis.fpgadataflow.exp_cycles_per_layer import exp_cycles_per_layer
+from finn.core.modelwrapper import ModelWrapper
+from finn.transformation.fpgadataflow.set_folding import SetFolding
+from finn.transformation.general import GiveUniqueNodeNames
 from finn.transformation.fpgadataflow.create_dataflow_partition import (
     CreateDataflowPartition,
 )
-from finn.transformation.fpgadataflow.set_folding import SetFolding
 from finn.util.test import load_test_checkpoint_or_skip
 
 
 def make_multi_fclayer_model(ch, wdt, adt, tdt, nnodes):
+
     W = np.random.randint(wdt.min(), wdt.max() + 1, size=(ch, ch))
     W = W.astype(np.float32)
 
@@ -54,7 +53,9 @@ def make_multi_fclayer_model(ch, wdt, adt, tdt, nnodes):
     tensors = []
     tensors.append(helper.make_tensor_value_info("inp", TensorProto.FLOAT, [1, ch]))
     for i in range(1, nnodes):
-        inter = helper.make_tensor_value_info("inter_" + str(i), TensorProto.FLOAT, [1, ch])
+        inter = helper.make_tensor_value_info(
+            "inter_" + str(i), TensorProto.FLOAT, [1, ch]
+        )
         tensors.append(inter)
     tensors.append(helper.make_tensor_value_info("outp", TensorProto.FLOAT, [1, ch]))
 
@@ -64,10 +65,10 @@ def make_multi_fclayer_model(ch, wdt, adt, tdt, nnodes):
         simd = 1
         FCLayer_nodes += [
             helper.make_node(
-                "MVAU_hls",
+                "StreamingFCLayer_Batch",
                 [tensors[i].name, "weights_" + str(i), "thresh_" + str(i)],
                 [tensors[i + 1].name],
-                domain="finn.custom_op.fpgadataflow.hls",
+                domain="finn.custom_op.fpgadataflow",
                 backend="fpgadataflow",
                 MW=ch,
                 MH=ch,
@@ -89,15 +90,14 @@ def make_multi_fclayer_model(ch, wdt, adt, tdt, nnodes):
         outputs=[tensors[-1]],
     )
 
-    model = qonnx_make_model(graph, producer_name="fclayer-model")
+    model = helper.make_model(graph, producer_name="fclayer-model")
     model = ModelWrapper(model)
 
     model.set_tensor_datatype("inp", adt)
     model.set_tensor_datatype("outp", adt)
 
     for i in range(1, nnodes + 1):
-        if tensors[i].name != "outp":
-            model.graph.value_info.append(tensors[i])
+        model.graph.value_info.append(tensors[i])
         model.set_initializer("weights_" + str(i - 1), W)
         model.set_initializer("thresh_" + str(i - 1), T)
         model.set_tensor_datatype("weights_" + str(i - 1), wdt)
@@ -107,12 +107,14 @@ def make_multi_fclayer_model(ch, wdt, adt, tdt, nnodes):
 
 
 # desired frames per second
-@pytest.mark.parametrize("target_fps", [30, 10**5, 10**7])
+@pytest.mark.parametrize("target_fps", [30, 10 ** 5, 10 ** 7])
 # target chip or board
 @pytest.mark.parametrize("platform", ["Pynq-Z1", "Ultra96", "U200"])
-@pytest.mark.fpgadataflow
 def test_set_folding(target_fps, platform):
-    model = make_multi_fclayer_model(128, DataType["INT4"], DataType["INT2"], DataType["INT16"], 5)
+
+    model = make_multi_fclayer_model(
+        128, DataType.INT4, DataType.INT2, DataType.INT16, 5
+    )
 
     model = model.transform(GiveUniqueNodeNames())
     parent_model = model.transform(CreateDataflowPartition())
@@ -122,7 +124,7 @@ def test_set_folding(target_fps, platform):
     dataflow_model = load_test_checkpoint_or_skip(dataflow_model_filename)
 
     clk_ns = 5
-    target_cycles_per_frame = int((10**9 / clk_ns) / target_fps)
+    target_cycles_per_frame = int((10 ** 9 / clk_ns) / target_fps)
     dataflow_model = dataflow_model.transform(SetFolding(target_cycles_per_frame))
 
     exp_cycles_dict = dataflow_model.analysis(exp_cycles_per_layer)

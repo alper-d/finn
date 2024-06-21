@@ -1,5 +1,4 @@
-# Copyright (C) 2020, Xilinx, Inc.
-# Copyright (C) 2024, Advanced Micro Devices, Inc.
+# Copyright (c) 2020, Xilinx
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -27,22 +26,21 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-import pytest
-
 import os
+
 from onnx import TensorProto, helper
-from qonnx.core.datatype import DataType
-from qonnx.core.modelwrapper import ModelWrapper
-from qonnx.util.basic import gen_finn_dt_tensor, get_by_name, qonnx_make_model
 
-from finn.transformation.fpgadataflow.compile_cppsim import CompileCppSim
+import pytest
+import finn.util.basic as util
+from finn.core.datatype import DataType
+from finn.core.modelwrapper import ModelWrapper
 from finn.transformation.fpgadataflow.prepare_cppsim import PrepareCppSim
+from finn.transformation.fpgadataflow.compile_cppsim import CompileCppSim
 
 
-@pytest.mark.fpgadataflow
 @pytest.mark.vivado
 def test_compilation_trafo():
-    idt = wdt = odt = DataType["BIPOLAR"]
+    idt = wdt = odt = DataType.BIPOLAR
     mw = 8
     mh = 8
     pe = 4
@@ -52,10 +50,10 @@ def test_compilation_trafo():
     outp = helper.make_tensor_value_info("outp", TensorProto.FLOAT, [1, mh])
     node_inp_list = ["inp", "weights", "thresh"]
     FCLayer_node = helper.make_node(
-        "MVAU_hls",
+        "StreamingFCLayer_Batch",
         node_inp_list,
         ["outp"],
-        domain="finn.custom_op.fpgadataflow.hls",
+        domain="finn.custom_op.fpgadataflow",
         backend="fpgadataflow",
         code_gen_dir="",
         executable_path="",
@@ -72,19 +70,19 @@ def test_compilation_trafo():
         nodes=[FCLayer_node], name="fclayer_graph", inputs=[inp], outputs=[outp]
     )
 
-    model = qonnx_make_model(graph, producer_name="fclayer-model")
+    model = helper.make_model(graph, producer_name="fclayer-model")
     model = ModelWrapper(model)
 
     model.set_tensor_datatype("inp", idt)
     model.set_tensor_datatype("outp", odt)
     model.set_tensor_datatype("weights", wdt)
-    W = gen_finn_dt_tensor(wdt, (mw, mh))
+    W = util.gen_finn_dt_tensor(wdt, (mw, mh))
     model.set_initializer("weights", W)
 
     model = model.transform(PrepareCppSim())
     model = model.transform(CompileCppSim())
     for node in model.graph.node:
-        compilation_attribute = get_by_name(node.attribute, "executable_path")
+        compilation_attribute = util.get_by_name(node.attribute, "executable_path")
         executable = compilation_attribute.s.decode("UTF-8")
         print(executable)
         assert os.path.isfile(

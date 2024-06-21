@@ -1,5 +1,4 @@
-# Copyright (C) 2020, Xilinx, Inc.
-# Copyright (C) 2024, Advanced Micro Devices, Inc.
+# Copyright (c) 2020, Xilinx
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -29,25 +28,27 @@
 
 import os
 import subprocess
-from qonnx.core.modelwrapper import ModelWrapper
-from qonnx.custom_op.registry import getCustomOp
-from qonnx.transformation.base import Transformation
-from qonnx.transformation.general import GiveReadableTensorNames, GiveUniqueNodeNames
-from qonnx.transformation.infer_data_layouts import InferDataLayouts
-from shutil import copy
+
+from finn.custom_op.registry import getCustomOp
+from finn.transformation.base import Transformation
+from finn.core.modelwrapper import ModelWrapper
+from finn.util.basic import get_by_name, make_build_dir
+from finn.util.basic import pynq_part_map
 
 from finn.transformation.fpgadataflow.create_dataflow_partition import (
     CreateDataflowPartition,
 )
-from finn.transformation.fpgadataflow.create_stitched_ip import CreateStitchedIP
-from finn.transformation.fpgadataflow.floorplan import Floorplan
-from finn.transformation.fpgadataflow.hlssynth_ip import HLSSynthIP
 from finn.transformation.fpgadataflow.insert_dwc import InsertDWC
 from finn.transformation.fpgadataflow.insert_fifo import InsertFIFO
 from finn.transformation.fpgadataflow.insert_iodma import InsertIODMA
 from finn.transformation.fpgadataflow.prepare_ip import PrepareIP
-from finn.transformation.fpgadataflow.specialize_layers import SpecializeLayers
-from finn.util.basic import make_build_dir, pynq_native_port_width, pynq_part_map
+from finn.transformation.fpgadataflow.hlssynth_ip import HLSSynthIP
+from finn.transformation.fpgadataflow.create_stitched_ip import CreateStitchedIP
+from finn.transformation.fpgadataflow.floorplan import Floorplan
+from finn.transformation.general import GiveReadableTensorNames, GiveUniqueNodeNames
+from finn.transformation.infer_data_layouts import InferDataLayouts
+from shutil import copy
+from finn.transformation.fpgadataflow.make_pynq_driver import MakePYNQDriver
 
 from . import templates
 
@@ -55,22 +56,19 @@ from . import templates
 def collect_ip_dirs(model, ipstitch_path):
     # collect list of all IP dirs
     ip_dirs = []
-    need_memstreamer = False
     for node in model.graph.node:
-        node_inst = getCustomOp(node)
-        ip_dir_value = node_inst.get_nodeattr("ip_path")
+        ip_dir_attribute = get_by_name(node.attribute, "ip_path")
+        assert (
+            ip_dir_attribute is not None
+        ), """Node attribute "ip_path" is
+        empty. Please run transformation HLSSynth_ipgen first."""
+        ip_dir_value = ip_dir_attribute.s.decode("UTF-8")
         assert os.path.isdir(
             ip_dir_value
         ), """The directory that should
         contain the generated ip blocks doesn't exist."""
         ip_dirs += [ip_dir_value]
-        if node.op_type.startswith("MVAU") or node.op_type == "Thresholding_hls":
-            if node_inst.get_nodeattr("mem_mode") == "internal_decoupled":
-                need_memstreamer = True
     ip_dirs += [ipstitch_path + "/ip"]
-    if need_memstreamer:
-        # add RTL streamer IP
-        ip_dirs.append("$::env(FINN_ROOT)/finn-rtllib/memstream")
     return ip_dirs
 
 
@@ -94,6 +92,7 @@ class MakeZYNQProject(Transformation):
         self.enable_debug = 1 if enable_debug else 0
 
     def apply(self, model):
+
         # create a config file and empty list of xo files
         config = []
         idma_idx = 0
@@ -111,12 +110,15 @@ class MakeZYNQProject(Transformation):
             ipstitch_path = kernel_model.get_metadata_prop("vivado_stitch_proj")
             if ipstitch_path is None or (not os.path.isdir(ipstitch_path)):
                 raise Exception(
-                    "No stitched IPI design found for %s, apply CreateStitchedIP first." % node.name
+                    "No stitched IPI design found for %s, apply CreateStitchedIP first."
+                    % node.name
                 )
 
             vivado_stitch_vlnv = kernel_model.get_metadata_prop("vivado_stitch_vlnv")
             if vivado_stitch_vlnv is None:
-                raise Exception("No vlnv found for %s, apply CreateStitchedIP first." % node.name)
+                raise Exception(
+                    "No vlnv found for %s, apply CreateStitchedIP first." % node.name
+                )
 
             ip_dirs = ["list"]
             ip_dirs += collect_ip_dirs(kernel_model, ipstitch_path)
@@ -142,23 +144,16 @@ class MakeZYNQProject(Transformation):
             # assume only one connection from each ip to the next
             # all aximm allocated to DDR[0]
             # all kernels allocated to SLR0
-            if len(node.input) == 0:
-                producer = None
-            else:
-                producer = model.find_producer(node.input[0])
+            producer = model.find_producer(node.input[0])
             consumer = model.find_consumers(node.output[0])
             # define kernel instances
             # name kernels connected to graph inputs as idmaxx
-            # name kernels connected to graph outputs as odmaxx
-            if (producer is None) or (consumer == []):
-                # TODO not a good way of checking for external inp&out
-                # should look at the list of top-level in/out instead
+            # name kernels connected to graph inputs as odmaxx
+            if producer is None or consumer is None:
                 if producer is None:
                     instance_names[node.name] = "idma" + str(idma_idx)
-                    idma_idx += 1
-                elif consumer == []:
+                elif consumer is None:
                     instance_names[node.name] = "odma" + str(odma_idx)
-                    odma_idx += 1
                 config.append(
                     "create_bd_cell -type ip -vlnv %s %s"
                     % (vivado_stitch_vlnv, instance_names[node.name])
@@ -168,7 +163,9 @@ class MakeZYNQProject(Transformation):
                     "[get_bd_intf_pins smartconnect_0/S%02d_AXI]"
                     % (instance_names[node.name], aximm_idx)
                 )
-                assert len(ifnames["axilite"]) == 1, "Must have 1 AXI lite interface on IODMA nodes"
+                assert (
+                    len(ifnames["axilite"]) == 1
+                ), "Must have 1 AXI lite interface on IODMA nodes"
                 axilite_intf_name = ifnames["axilite"][0]
                 assert axilite_intf_name is not None
                 config.append(
@@ -176,11 +173,7 @@ class MakeZYNQProject(Transformation):
                     "[get_bd_intf_pins axi_interconnect_0/M%02d_AXI]"
                     % (instance_names[node.name], axilite_intf_name, axilite_idx)
                 )
-                # assign_bd_address with appropriate range/offset
-                config.append(
-                    "assign_axi_addr_proc %s/%s" % (instance_names[node.name], axilite_intf_name)
-                )
-
+                idma_idx += 1
                 aximm_idx += 1
                 axilite_idx += 1
             else:
@@ -195,13 +188,7 @@ class MakeZYNQProject(Transformation):
                         "[get_bd_intf_pins axi_interconnect_0/M%02d_AXI]"
                         % (instance_names[node.name], axilite_intf_name, axilite_idx)
                     )
-                    # assign_bd_address with appropriate range/offset
-                    config.append(
-                        "assign_axi_addr_proc %s/%s"
-                        % (instance_names[node.name], axilite_intf_name)
-                    )
                     axilite_idx += 1
-            sdp_node.set_nodeattr("instance_name", instance_names[node.name])
 
             config.append(
                 "connect_bd_net [get_bd_pins %s/ap_clk] "
@@ -264,27 +251,21 @@ class MakeZYNQProject(Transformation):
         bash_command = ["bash", synth_project_sh]
         process_compile = subprocess.Popen(bash_command, stdout=subprocess.PIPE)
         process_compile.communicate()
-        bitfile_name = vivado_pynq_proj_dir + "/finn_zynq_link.runs/impl_1/top_wrapper.bit"
+        bitfile_name = (
+            vivado_pynq_proj_dir + "/finn_zynq_link.runs/impl_1/top_wrapper.bit"
+        )
         if not os.path.isfile(bitfile_name):
-            raise Exception(
-                "Synthesis failed, no bitfile found. Check logs under %s" % vivado_pynq_proj_dir
-            )
+            raise Exception("Synthesis failed, no bitfile found")
         deploy_bitfile_name = vivado_pynq_proj_dir + "/resizer.bit"
         copy(bitfile_name, deploy_bitfile_name)
         # set bitfile attribute
         model.set_metadata_prop("bitfile", deploy_bitfile_name)
-        hwh_name_alts = [
-            vivado_pynq_proj_dir + "/finn_zynq_link.srcs/sources_1/bd/top/hw_handoff/top.hwh",
-            vivado_pynq_proj_dir + "/finn_zynq_link.gen/sources_1/bd/top/hw_handoff/top.hwh",
-        ]
-        hwh_name = None
-        for hwh_name_cand in hwh_name_alts:
-            if os.path.isfile(hwh_name_cand):
-                hwh_name = hwh_name_cand
+        hwh_name = (
+            vivado_pynq_proj_dir
+            + "/finn_zynq_link.srcs/sources_1/bd/top/hw_handoff/top.hwh"
+        )
         if not os.path.isfile(hwh_name):
-            raise Exception(
-                "Synthesis failed, no bitfile found. Check logs under %s" % vivado_pynq_proj_dir
-            )
+            raise Exception("Synthesis failed, no hardware handoff file found")
         deploy_hwh_name = vivado_pynq_proj_dir + "/resizer.hwh"
         copy(hwh_name, deploy_hwh_name)
         model.set_metadata_prop("hw_handoff", deploy_hwh_name)
@@ -295,36 +276,25 @@ class MakeZYNQProject(Transformation):
 
 
 class ZynqBuild(Transformation):
-    """Best-effort attempt at building the accelerator for Zynq.
-    It assumes the model has only fpgadataflow nodes
+    """Best-effort attempt at building the accelerator for Zynq."""
 
-    """
-
-    def __init__(
-        self,
-        platform,
-        period_ns,
-        enable_debug=False,
-        partition_model_dir=None,
-    ):
+    def __init__(self, platform, period_ns, enable_debug=False):
         super().__init__()
         self.fpga_part = pynq_part_map[platform]
-        self.axi_port_width = pynq_native_port_width[platform]
         self.period_ns = period_ns
         self.platform = platform
         self.enable_debug = enable_debug
-        self.partition_model_dir = partition_model_dir
 
     def apply(self, model):
         # first infer layouts
         model = model.transform(InferDataLayouts())
         # prepare at global level, then break up into kernels
         prep_transforms = [
-            InsertIODMA(self.axi_port_width),
+            MakePYNQDriver(platform="zynq-iodma"),
+            InsertIODMA(64),
             InsertDWC(),
-            SpecializeLayers(),
             Floorplan(),
-            CreateDataflowPartition(partition_model_dir=self.partition_model_dir),
+            CreateDataflowPartition(),
         ]
         for trn in prep_transforms:
             model = model.transform(trn)
@@ -338,20 +308,23 @@ class ZynqBuild(Transformation):
             dataflow_model_filename = sdp_node.get_nodeattr("model")
             kernel_model = ModelWrapper(dataflow_model_filename)
             kernel_model = kernel_model.transform(InsertFIFO())
-            kernel_model = kernel_model.transform(SpecializeLayers())
             kernel_model = kernel_model.transform(GiveUniqueNodeNames(prefix))
             kernel_model.save(dataflow_model_filename)
-            kernel_model = kernel_model.transform(PrepareIP(self.fpga_part, self.period_ns))
+            kernel_model = kernel_model.transform(
+                PrepareIP(self.fpga_part, self.period_ns)
+            )
             kernel_model = kernel_model.transform(HLSSynthIP())
             kernel_model = kernel_model.transform(
-                CreateStitchedIP(self.fpga_part, self.period_ns, sdp_node.onnx_node.name, False)
+                CreateStitchedIP(
+                    self.fpga_part, self.period_ns, sdp_node.onnx_node.name, True
+                )
             )
             kernel_model.set_metadata_prop("platform", "zynq-iodma")
             kernel_model.save(dataflow_model_filename)
         # Assemble design from IPs
-        model = model.transform(MakeZYNQProject(self.platform, enable_debug=self.enable_debug))
-
+        model = model.transform(
+            MakeZYNQProject(self.platform, enable_debug=self.enable_debug)
+        )
         # set platform attribute for correct remote execution
         model.set_metadata_prop("platform", "zynq-iodma")
-
         return (model, False)

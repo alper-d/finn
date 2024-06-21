@@ -1,5 +1,4 @@
-# Copyright (c) 2020, Xilinx, Inc.
-# Copyright (C) 2024, Advanced Micro Devices, Inc.
+# Copyright (c) 2020, Xilinx
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -28,11 +27,11 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import os
-import qonnx.custom_op.registry as registry
 import shutil
-from qonnx.transformation.base import Transformation
 
+import finn.custom_op.registry as registry
 from finn.util.fpgadataflow import is_fpgadataflow_node
+from finn.transformation.base import Transformation
 
 
 class CleanUp(Transformation):
@@ -54,7 +53,7 @@ class CleanUp(Transformation):
         model.set_metadata_prop("vivado_stitch_proj", "")
         for node in model.graph.node:
             op_type = node.op_type
-            if is_fpgadataflow_node(node):
+            if is_fpgadataflow_node(node) is True:
                 try:
                     # lookup op_type in registry of CustomOps
                     inst = registry.getCustomOp(node)
@@ -80,5 +79,7 @@ class CleanUp(Transformation):
 
                 except KeyError:
                     # exception if op_type is not supported
-                    raise Exception("Custom op_type %s is currently not supported." % op_type)
+                    raise Exception(
+                        "Custom op_type %s is currently not supported." % op_type
+                    )
         return (model, False)

@@ -27,9 +27,9 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import argparse
-import numpy as np
 from driver import io_shape_dict
 from driver_base import FINNExampleOverlay
+import numpy as np
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
@@ -38,7 +38,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--batchsize", help="number of samples for inference", type=int, default=100
     )
-    parser.add_argument("--dataset", help="dataset to use (mnist of cifar10)", required=True)
+    parser.add_argument(
+        "--dataset", help="dataset to use (mnist of cifar10)", required=True
+    )
     parser.add_argument(
         "--platform", help="Target platform: zynq-iodma alveo", default="zynq-iodma"
     )
@@ -92,11 +94,11 @@ if __name__ == "__main__":
     test_labels = test_labels.reshape(n_batches, bsize)
 
     for i in range(n_batches):
-        ibuf_normal = test_imgs[i].reshape(driver.ibuf_packed_device[0].shape)
+        ibuf_normal = test_imgs[i].reshape(driver.ibuf_packed_device.shape)
         exp = test_labels[i]
         driver.copy_input_data_to_device(ibuf_normal)
         driver.execute_on_buffers()
-        obuf_normal = np.empty_like(driver.obuf_packed_device[0])
+        obuf_normal = np.empty_like(driver.obuf_packed_device)
         driver.copy_output_data_from_device(obuf_normal)
         ret = np.bincount(obuf_normal.flatten() == exp.flatten())
         nok += ret[0]

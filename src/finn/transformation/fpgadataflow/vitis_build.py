@@ -1,5 +1,4 @@
-# Copyright (c) 2020, Xilinx, Inc.
-# Copyright (C) 2024, Advanced Micro Devices, Inc.
+# Copyright (c) 2020, Xilinx
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -27,38 +26,37 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-import json
 import os
 import subprocess
-from enum import Enum
-from qonnx.core.modelwrapper import ModelWrapper
-from qonnx.custom_op.registry import getCustomOp
-from qonnx.transformation.base import Transformation
-from qonnx.transformation.general import (
-    GiveReadableTensorNames,
-    GiveUniqueNodeNames,
-    RemoveUnusedTensors,
-)
+
+from finn.core.modelwrapper import ModelWrapper
+from finn.transformation.base import Transformation
+from finn.custom_op.registry import getCustomOp
 
 from finn.transformation.fpgadataflow.create_dataflow_partition import (
     CreateDataflowPartition,
 )
-from finn.transformation.fpgadataflow.create_stitched_ip import CreateStitchedIP
-from finn.transformation.fpgadataflow.floorplan import Floorplan
-from finn.transformation.fpgadataflow.hlssynth_ip import HLSSynthIP
 from finn.transformation.fpgadataflow.insert_dwc import InsertDWC
 from finn.transformation.fpgadataflow.insert_fifo import InsertFIFO
+from finn.transformation.fpgadataflow.insert_tlastmarker import InsertTLastMarker
 from finn.transformation.fpgadataflow.insert_iodma import InsertIODMA
 from finn.transformation.fpgadataflow.prepare_ip import PrepareIP
-from finn.transformation.fpgadataflow.specialize_layers import SpecializeLayers
+from finn.transformation.fpgadataflow.hlssynth_ip import HLSSynthIP
+from finn.transformation.fpgadataflow.create_stitched_ip import CreateStitchedIP
+from finn.transformation.fpgadataflow.floorplan import Floorplan
+from finn.transformation.fpgadataflow.make_pynq_driver import MakePYNQDriver
+from finn.transformation.general import GiveReadableTensorNames, GiveUniqueNodeNames
 from finn.util.basic import make_build_dir
-
+from finn.transformation.infer_data_layouts import InferDataLayouts
 from . import templates
+from enum import Enum
 
 
 def _check_vitis_envvars():
     assert "VITIS_PATH" in os.environ, "VITIS_PATH must be set for Vitis"
-    assert "PLATFORM_REPO_PATHS" in os.environ, "PLATFORM_REPO_PATHS must be set for Vitis"
+    assert (
+        "PLATFORM_REPO_PATHS" in os.environ
+    ), "PLATFORM_REPO_PATHS must be set for Vitis"
     assert (
         "XILINX_XRT" in os.environ
     ), "XILINX_XRT must be set for Vitis, ensure the XRT env is sourced"
@@ -91,43 +89,63 @@ class CreateVitisXO(Transformation):
         _check_vitis_envvars()
         vivado_proj_dir = model.get_metadata_prop("vivado_stitch_proj")
         stitched_ip_dir = vivado_proj_dir + "/ip"
-        interfaces = json.loads(model.get_metadata_prop("vivado_stitch_ifnames"))
         args_string = []
-        arg_id = 0
+        m_axis_idx = 0
+        s_axis_idx = 0
         # NOTE: this assumes the graph is Vitis-compatible: max one axi lite interface
         # developed from instructions in UG1393 (v2019.2) and package_xo documentation
         # package_xo is responsible for generating the kernel xml
-        assert len(interfaces["axilite"]) <= 1, "CreateVitisXO supports max 1 AXI lite interface"
-        axilite_intf_name = None
-        if len(interfaces["axilite"]) == 1:
-            axilite_intf_name = interfaces["axilite"][0]
-            if len(interfaces["aximm"]) > 0:
-                args_string.append(
-                    "{addr:1:%s:%s:0x8:0x10:ap_uint&lt;%s>*:0}"
-                    % (
-                        str(arg_id),
-                        interfaces["aximm"][0][0],
-                        str(interfaces["aximm"][0][1]),
+        ifnames = eval(model.get_metadata_prop("vivado_stitch_ifnames"))
+        assert (
+            len(ifnames["axilite"]) <= 1
+        ), "CreateVitisXO supports max 1 AXI lite interface"
+        if len(ifnames["axilite"]) == 1:
+            axilite_intf_name = ifnames["axilite"][0]
+        else:
+            axilite_intf_name = None
+
+        for node in model.graph.node:
+            node_inst = getCustomOp(node)
+            arg_id = 0
+            if node.op_type == "TLastMarker":
+                stream_width = node_inst.get_nodeattr("StreamWidth")
+                # add a stream input or output port, based on direction
+                if node_inst.get_nodeattr("Direction") == "in":
+                    args_string.append(
+                        "{in:4:%s:s_axis_%d:0x0:0x0:ap_uint&lt;%s>:0}"
+                        % (str(arg_id), s_axis_idx, str(stream_width))
                     )
+                    s_axis_idx += 1
+                else:
+                    args_string.append(
+                        "{out:4:%s:m_axis_%d:0x0:0x0:ap_uint&lt;%s>:0}"
+                        % (str(arg_id), m_axis_idx, str(stream_width))
+                    )
+                    m_axis_idx += 1
+                arg_id += 1
+                # add a axilite port if dynamic
+                # add a count parameter if dynamic
+                if node_inst.get_nodeattr("DynIters") == 1:
+                    assert axilite_intf_name is not None
+                    args_string.append(
+                        "{numReps:0:%s:%s:0x4:0x10:uint:0}"
+                        % (str(arg_id), axilite_intf_name)
+                    )
+                    arg_id += 1
+            elif node.op_type == "IODMA":
+                port_width = node_inst.get_nodeattr("intfWidth")
+                # add an address parameter
+                # add a count parameter
+                args_string.append(
+                    "{addr:1:%s:m_axi_gmem0:0x8:0x10:ap_uint&lt;%s>*:0}"
+                    % (str(arg_id), str(port_width))
                 )
                 arg_id += 1
                 args_string.append(
-                    "{numReps:0:%s:%s:0x4:0x1C:uint:0}" % (str(arg_id), axilite_intf_name)
+                    "{numReps:0:%s:%s:0x4:0x1C:uint:0}"
+                    % (str(arg_id), axilite_intf_name)
                 )
                 arg_id += 1
-            else:
-                args_string.append(
-                    "{numReps:0:%s:%s:0x4:0x10:uint:0}" % (str(arg_id), axilite_intf_name)
-                )
-                arg_id += 1
-        for intf in interfaces["s_axis"] + interfaces["m_axis"]:
-            stream_width = intf[1]
-            stream_name = intf[0]
-            args_string.append(
-                "{%s:4:%s:%s:0x0:0x0:ap_uint&lt;%s>:0}"
-                % (stream_name, str(arg_id), stream_name, str(stream_width))
-            )
-            arg_id += 1
 
         # save kernel xml then run package_xo
         xo_name = self.ip_name + ".xo"
@@ -135,10 +153,9 @@ class CreateVitisXO(Transformation):
         model.set_metadata_prop("vitis_xo", xo_path)
 
         # generate the package_xo command in a tcl script
-        package_xo_string = "package_xo -force -xo_path %s -kernel_name %s -ip_directory %s" % (
-            xo_path,
-            self.ip_name,
-            stitched_ip_dir,
+        package_xo_string = (
+            "package_xo -force -xo_path %s -kernel_name %s -ip_directory %s"
+            % (xo_path, self.ip_name, stitched_ip_dir)
         )
         for arg in args_string:
             package_xo_string += " -kernel_xml_args " + arg
@@ -202,57 +219,31 @@ class VitisLink(Transformation):
             # has axis, aximm and axilite
             # everything else is axis-only
             # assume only one connection from each ip to the next
-            if len(node.input) == 0:
-                producer = None
-            else:
-                producer = model.find_producer(node.input[0])
+            # all aximm allocated to DDR[0]
+            # all kernels allocated to SLR0
+            producer = model.find_producer(node.input[0])
             consumer = model.find_consumers(node.output[0])
             # define kernel instances
             # name kernels connected to graph inputs as idmaxx
             # name kernels connected to graph inputs as odmaxx
-            # TODO not a good way of checking for external in/out
-            # check top-level in/out list instead
             if producer is None:
                 instance_names[node.name] = "idma" + str(idma_idx)
                 config.append("nk=%s:1:%s" % (node.name, instance_names[node.name]))
                 idma_idx += 1
-            elif consumer == []:
+            elif consumer is None:
                 instance_names[node.name] = "odma" + str(odma_idx)
                 config.append("nk=%s:1:%s" % (node.name, instance_names[node.name]))
                 odma_idx += 1
             else:
                 instance_names[node.name] = node.name
                 config.append("nk=%s:1:%s" % (node.name, instance_names[node.name]))
-            sdp_node.set_nodeattr("instance_name", instance_names[node.name])
-            # explicitly assign SLRs if the slr attribute is not -1
-            node_slr = sdp_node.get_nodeattr("slr")
-            if node_slr != -1:
-                config.append("slr=%s:SLR%d" % (instance_names[node.name], node_slr))
+            # assign SLRs
+            config.append("slr=%s:SLR0" % instance_names[node.name])
             # assign memory banks
             if producer is None or consumer is None:
-                node_mem_port = sdp_node.get_nodeattr("mem_port")
-                if node_mem_port == "":
-                    # configure good defaults based on board
-                    if "u50" in self.platform or "u280" in self.platform or "u55c" in self.platform:
-                        # Use HBM where available (also U50 does not have DDR)
-                        mem_type = "HBM"
-                        mem_idx = 0
-                    elif "u200" in self.platform:
-                        # Use DDR controller in static region of U200
-                        mem_type = "DDR"
-                        mem_idx = 1
-                    elif "u250" in self.platform:
-                        # Use DDR controller on the node's SLR if set, otherwise 0
-                        mem_type = "DDR"
-                        if node_slr == -1:
-                            mem_idx = 0
-                        else:
-                            mem_idx = node_slr
-                    else:
-                        mem_type = "DDR"
-                        mem_idx = 1
-                    node_mem_port = "%s[%d]" % (mem_type, mem_idx)
-                config.append("sp=%s.m_axi_gmem0:%s" % (instance_names[node.name], node_mem_port))
+                config.append(
+                    "sp=%s.m_axi_gmem0:DDR[%d]" % (instance_names[node.name], 0)
+                )
             # connect streams
             if producer is not None:
                 for i in range(len(node.input)):
@@ -276,10 +267,14 @@ class VitisLink(Transformation):
         # add Vivado physopt directives if desired
         if self.strategy == VitisOptStrategy.PERFORMANCE_BEST:
             config.append("[vivado]")
-            config.append("prop=run.impl_1.STEPS.OPT_DESIGN.ARGS.DIRECTIVE=ExploreWithRemap")
+            config.append(
+                "prop=run.impl_1.STEPS.OPT_DESIGN.ARGS.DIRECTIVE=ExploreWithRemap"
+            )
             config.append("prop=run.impl_1.STEPS.PLACE_DESIGN.ARGS.DIRECTIVE=Explore")
             config.append("prop=run.impl_1.STEPS.PHYS_OPT_DESIGN.IS_ENABLED=true")
-            config.append("prop=run.impl_1.STEPS.PHYS_OPT_DESIGN.ARGS.DIRECTIVE=Explore")
+            config.append(
+                "prop=run.impl_1.STEPS.PHYS_OPT_DESIGN.ARGS.DIRECTIVE=Explore"
+            )
             config.append("prop=run.impl_1.STEPS.ROUTE_DESIGN.ARGS.DIRECTIVE=Explore")
 
         config = "\n".join(config) + "\n"
@@ -332,7 +327,9 @@ class VitisLink(Transformation):
         with open(gen_rep_xml_sh, "w") as f:
             f.write("#!/bin/bash \n")
             f.write("cd {}\n".format(link_dir))
-            f.write("vivado -mode batch -source %s\n" % (link_dir + "/gen_report_xml.tcl"))
+            f.write(
+                "vivado -mode batch -source %s\n" % (link_dir + "/gen_report_xml.tcl")
+            )
             f.write("cd {}\n".format(working_dir))
         bash_command = ["bash", gen_rep_xml_sh]
         process_genxml = subprocess.Popen(bash_command, stdout=subprocess.PIPE)
@@ -345,18 +342,16 @@ class VitisLink(Transformation):
 
 class VitisBuild(Transformation):
     """Best-effort attempt at building the accelerator with Vitis.
-    It assumes the model has only fpgadataflow nodes
 
-    :parameter fpga_part: string identifying the target FPGA
-    :parameter period_ns: target clock period
-    :parameter platform: target Alveo platform, one of ["U50", "U200", "U250", "U280"]
-    :parameter strategy: Vitis optimization strategy
-    :parameter enable_debug: add Chipscope to all AXI interfaces
-    :parameter floorplan_file: path to a JSON containing a dictionary with
-        SLR assignments for each node in the ONNX graph.
-        Must be parse-able by the ApplyConfig transform.
-    :parameter enable_link: enable linking kernels (.xo files),
-        otherwise just synthesize them independently.
+    fpga_part: string identifying the target FPGA
+    period_ns: target clock period
+    platform: target Alveo platform, one of ["U50", "U200", "U250", "U280"]
+    strategy: Vitis optimization strategy
+    enable_debug: add Chipscope to all AXI interfaces
+    floorplan_file: path to a JSON containing a dictionary with SLR assignments
+                    for each node in the ONNX graph. Must be parse-able by
+                    the ApplyConfig transform.
+
     """
 
     def __init__(
@@ -367,8 +362,6 @@ class VitisBuild(Transformation):
         strategy=VitisOptStrategy.PERFORMANCE,
         enable_debug=False,
         floorplan_file=None,
-        enable_link=True,
-        partition_model_dir=None,
     ):
         super().__init__()
         self.fpga_part = fpga_part
@@ -377,13 +370,17 @@ class VitisBuild(Transformation):
         self.strategy = strategy
         self.enable_debug = enable_debug
         self.floorplan_file = floorplan_file
-        self.enable_link = enable_link
-        self.partition_model_dir = partition_model_dir
 
     def apply(self, model):
         _check_vitis_envvars()
+        # first infer layouts
+        model = model.transform(InferDataLayouts())
         # prepare at global level, then break up into kernels
-        prep_transforms = [InsertIODMA(512), InsertDWC(), SpecializeLayers()]
+        prep_transforms = [
+            MakePYNQDriver(platform="alveo"),
+            InsertIODMA(512),
+            InsertDWC(),
+        ]
         for trn in prep_transforms:
             model = model.transform(trn)
             model = model.transform(GiveUniqueNodeNames())
@@ -391,42 +388,45 @@ class VitisBuild(Transformation):
 
         model = model.transform(Floorplan(floorplan=self.floorplan_file))
 
-        model = model.transform(
-            CreateDataflowPartition(partition_model_dir=self.partition_model_dir)
-        )
+        model = model.transform(CreateDataflowPartition())
         model = model.transform(GiveUniqueNodeNames())
         model = model.transform(GiveReadableTensorNames())
 
         # Build each kernel individually
         sdp_nodes = model.get_nodes_by_op_type("StreamingDataflowPartition")
         for sdp_node in sdp_nodes:
-            prefix = sdp_node.name + "_"
             sdp_node = getCustomOp(sdp_node)
             dataflow_model_filename = sdp_node.get_nodeattr("model")
             kernel_model = ModelWrapper(dataflow_model_filename)
             kernel_model = kernel_model.transform(InsertFIFO())
-            kernel_model = kernel_model.transform(SpecializeLayers())
-            kernel_model = kernel_model.transform(RemoveUnusedTensors())
-            kernel_model = kernel_model.transform(GiveUniqueNodeNames(prefix))
+            kernel_model = kernel_model.transform(
+                InsertTLastMarker(both=True, external=False, dynamic=False)
+            )
+            kernel_model = kernel_model.transform(GiveUniqueNodeNames())
             kernel_model.save(dataflow_model_filename)
-            kernel_model = kernel_model.transform(PrepareIP(self.fpga_part, self.period_ns))
+            kernel_model = kernel_model.transform(
+                PrepareIP(self.fpga_part, self.period_ns)
+            )
             kernel_model = kernel_model.transform(HLSSynthIP())
             kernel_model = kernel_model.transform(
-                CreateStitchedIP(self.fpga_part, self.period_ns, sdp_node.onnx_node.name, True)
+                CreateStitchedIP(
+                    self.fpga_part, self.period_ns, sdp_node.onnx_node.name, True
+                )
             )
-            kernel_model = kernel_model.transform(CreateVitisXO(sdp_node.onnx_node.name))
+            kernel_model = kernel_model.transform(
+                CreateVitisXO(sdp_node.onnx_node.name)
+            )
             kernel_model.set_metadata_prop("platform", "alveo")
             kernel_model.save(dataflow_model_filename)
         # Assemble design from kernels
-        if self.enable_link:
-            model = model.transform(
-                VitisLink(
-                    self.platform,
-                    round(1000 / self.period_ns),
-                    strategy=self.strategy,
-                    enable_debug=self.enable_debug,
-                )
+        model = model.transform(
+            VitisLink(
+                self.platform,
+                round(1000 / self.period_ns),
+                strategy=self.strategy,
+                enable_debug=self.enable_debug,
             )
+        )
         # set platform attribute for correct remote execution
         model.set_metadata_prop("platform", "alveo")
 

@@ -1,5 +1,4 @@
-# Copyright (c) 2020-2022, Xilinx
-# Copyright (C) 2023, Advanced Micro Devices, Inc.
+# Copyright (c) 2020, Xilinx
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -28,54 +27,49 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import pytest
-
 import numpy as np
+
 from onnx import TensorProto, helper
-from qonnx.core.datatype import DataType
-from qonnx.core.modelwrapper import ModelWrapper
-from qonnx.custom_op.registry import getCustomOp
-from qonnx.transformation.general import GiveUniqueNodeNames
-from qonnx.transformation.infer_datatypes import InferDataTypes
-from qonnx.transformation.infer_shapes import InferShapes
-from qonnx.util.basic import gen_finn_dt_tensor, qonnx_make_model
 
 import finn.core.onnx_exec as oxe
-from finn.analysis.fpgadataflow.exp_cycles_per_layer import exp_cycles_per_layer
+from finn.core.datatype import DataType
+from finn.core.modelwrapper import ModelWrapper
+from finn.transformation.infer_shapes import InferShapes
+from finn.transformation.infer_datatypes import InferDataTypes
+from finn.transformation.fpgadataflow.prepare_ip import PrepareIP
+from finn.transformation.fpgadataflow.prepare_cppsim import PrepareCppSim
 from finn.transformation.fpgadataflow.compile_cppsim import CompileCppSim
 from finn.transformation.fpgadataflow.hlssynth_ip import HLSSynthIP
-from finn.transformation.fpgadataflow.prepare_cppsim import PrepareCppSim
-from finn.transformation.fpgadataflow.prepare_ip import PrepareIP
-from finn.transformation.fpgadataflow.prepare_rtlsim import PrepareRTLSim
 from finn.transformation.fpgadataflow.set_exec_mode import SetExecMode
-from finn.transformation.fpgadataflow.specialize_layers import SpecializeLayers
+from finn.transformation.general import GiveUniqueNodeNames
+from finn.transformation.fpgadataflow.prepare_rtlsim import PrepareRTLSim
+from finn.util.basic import gen_finn_dt_tensor
+from finn.custom_op.registry import getCustomOp
+from finn.analysis.fpgadataflow.exp_cycles_per_layer import exp_cycles_per_layer
 
 
-def make_dupstreams_modelwrapper(ch, pe, idim, idt, n_dupl, impl_style):
+def make_dupstreams_modelwrapper(ch, pe, idim, idt):
     shape = [1, idim, idim, ch]
     inp = helper.make_tensor_value_info("inp", TensorProto.FLOAT, shape)
-    out_names = []
-    out_vi = []
-    for i in range(n_dupl):
-        outp_name = "outp%d" % i
-        out_names.append(outp_name)
-        out_vi.append(helper.make_tensor_value_info(outp_name, TensorProto.FLOAT, shape))
+    outp0 = helper.make_tensor_value_info("outp0", TensorProto.FLOAT, shape)
+    outp1 = helper.make_tensor_value_info("outp1", TensorProto.FLOAT, shape)
 
     dupstrm_node = helper.make_node(
-        "DuplicateStreams",
+        "DuplicateStreams_Batch",
         ["inp"],
-        out_names,
+        ["outp0", "outp1"],
         domain="finn.custom_op.fpgadataflow",
         backend="fpgadataflow",
         NumChannels=ch,
-        NumOutputStreams=n_dupl,
         PE=pe,
         inputDataType=idt.name,
         numInputVectors=[1, idim, idim],
-        preferred_impl_style=impl_style,
     )
-    graph = helper.make_graph(nodes=[dupstrm_node], name="graph", inputs=[inp], outputs=out_vi)
+    graph = helper.make_graph(
+        nodes=[dupstrm_node], name="graph", inputs=[inp], outputs=[outp0, outp1]
+    )
 
-    model = qonnx_make_model(graph, producer_name="addstreams-model")
+    model = helper.make_model(graph, producer_name="addstreams-model")
     model = ModelWrapper(model)
 
     model.set_tensor_datatype("inp", idt)
@@ -91,22 +85,17 @@ def prepare_inputs(input_tensor, idt):
 
 
 # data type
-@pytest.mark.parametrize("idt", [DataType["INT4"], DataType["UINT16"]])
+@pytest.mark.parametrize("idt", [DataType.INT4, DataType.UINT16])
 # channels
 @pytest.mark.parametrize("ch", [64])
 # folding
 @pytest.mark.parametrize("fold", [-1, 2, 1])
 # image dimension
 @pytest.mark.parametrize("imdim", [7])
-# amount of duplication
-@pytest.mark.parametrize("n_dupl", [2, 3])
 # execution mode
 @pytest.mark.parametrize("exec_mode", ["cppsim", "rtlsim"])
-# impl_style
-@pytest.mark.parametrize("impl_style", ["hls"])
-@pytest.mark.fpgadataflow
 @pytest.mark.vivado
-def test_fpgadataflow_duplicatestreams(idt, ch, fold, imdim, n_dupl, exec_mode, impl_style):
+def test_fpgadataflow_duplicatestreams(idt, ch, fold, imdim, exec_mode):
     if fold == -1:
         pe = 1
     else:
@@ -116,19 +105,7 @@ def test_fpgadataflow_duplicatestreams(idt, ch, fold, imdim, n_dupl, exec_mode, 
     # generate input data
     x = gen_finn_dt_tensor(idt, (1, imdim, imdim, ch))
 
-    model = make_dupstreams_modelwrapper(ch, pe, imdim, idt, n_dupl, impl_style)
-
-    # prepare input data and execute
-    input_dict = prepare_inputs(x, idt)
-
-    # check behavior of hw abstraction layer
-    output_dict = oxe.execute_onnx(model, input_dict)
-    expected_y = x
-    for i in range(n_dupl):
-        y = output_dict["outp%d" % i]
-        assert (y == expected_y).all(), "HW layer execution failed"
-
-    model = model.transform(SpecializeLayers())
+    model = make_dupstreams_modelwrapper(ch, pe, imdim, idt)
 
     if exec_mode == "cppsim":
         model = model.transform(PrepareCppSim())
@@ -143,14 +120,18 @@ def test_fpgadataflow_duplicatestreams(idt, ch, fold, imdim, n_dupl, exec_mode, 
     else:
         raise Exception("Unknown exec_mode")
 
+    # prepare input data and execute
+    input_dict = prepare_inputs(x, idt)
     output_dict = oxe.execute_onnx(model, input_dict)
+    y0 = output_dict["outp0"]
+    y1 = output_dict["outp1"]
+    expected_y = x
 
-    for i in range(n_dupl):
-        y = output_dict["outp%d" % i]
-        assert (y == expected_y).all(), exec_mode + " failed"
+    assert (y0 == expected_y).all(), exec_mode + " failed"
+    assert (y1 == expected_y).all(), exec_mode + " failed"
 
     if exec_mode == "rtlsim":
-        node = model.get_nodes_by_op_type("DuplicateStreams_hls")[0]
+        node = model.get_nodes_by_op_type("DuplicateStreams_Batch")[0]
         inst = getCustomOp(node)
         cycles_rtlsim = inst.get_nodeattr("cycles_rtlsim")
         exp_cycles_dict = model.analysis(exp_cycles_per_layer)

@@ -1,5 +1,4 @@
-# Copyright (C) 2020, Xilinx, Inc.
-# Copyright (C) 2024, Advanced Micro Devices, Inc.
+# Copyright (c) 2020, Xilinx
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -27,10 +26,9 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-import qonnx.custom_op.registry as registry
-from qonnx.transformation.base import NodeLocalTransformation
-
-from finn.util.fpgadataflow import is_hls_node
+import finn.custom_op.registry as registry
+from finn.util.fpgadataflow import is_fpgadataflow_node
+from finn.transformation.base import NodeLocalTransformation
 
 
 class CompileCppSim(NodeLocalTransformation):
@@ -51,7 +49,7 @@ class CompileCppSim(NodeLocalTransformation):
 
     def applyNodeLocal(self, node):
         op_type = node.op_type
-        if is_hls_node(node):
+        if is_fpgadataflow_node(node) is True:
             try:
                 # lookup op_type in registry of CustomOps
                 inst = registry.getCustomOp(node)
@@ -71,5 +69,7 @@ class CompileCppSim(NodeLocalTransformation):
                 in node attribute "executable_path"."""
             except KeyError:
                 # exception if op_type is not supported
-                raise Exception("Custom op_type %s is currently not supported." % op_type)
+                raise Exception(
+                    "Custom op_type %s is currently not supported." % op_type
+                )
         return (node, False)

@@ -1,5 +1,4 @@
-# Copyright (C) 2020, Xilinx, Inc.
-# Copyright (C) 2024, Advanced Micro Devices, Inc.
+# Copyright (c) 2020, Xilinx
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -28,12 +27,11 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import os
-import qonnx.custom_op.registry as registry
-import warnings
-from qonnx.transformation.base import Transformation
-
+import finn.custom_op.registry as registry
+from finn.transformation.base import Transformation
 from finn.util.basic import make_build_dir
-from finn.util.fpgadataflow import is_hls_node, is_rtl_node
+from finn.util.fpgadataflow import is_fpgadataflow_node
+import warnings
 
 
 def _codegen_single_node(node, model, fpgapart, clk):
@@ -48,7 +46,9 @@ def _codegen_single_node(node, model, fpgapart, clk):
         code_gen_dir = inst.get_nodeattr("code_gen_dir_ipgen")
         # ensure that there is a directory
         if code_gen_dir == "" or not os.path.isdir(code_gen_dir):
-            code_gen_dir = make_build_dir(prefix="code_gen_ipgen_" + str(node.name) + "_")
+            code_gen_dir = make_build_dir(
+                prefix="code_gen_ipgen_" + str(node.name) + "_"
+            )
             inst.set_nodeattr("code_gen_dir_ipgen", code_gen_dir)
             # ensure that there is generated code inside the dir
             inst.code_generation_ipgen(model, fpgapart, clk)
@@ -73,15 +73,8 @@ class PrepareIP(Transformation):
     will be skipped.
 
     Outcome if succesful: Node attribute "code_gen_dir_ipgen" contains path to folder
-    that contains:
-
-    * For HLS layers: generated C++ code that can be used to generate a Vivado IP block.
-      The necessary subsequent transformation is HLSSynthIP.
-
-    * For RTL layers: filled template verilog files that can be used to instantiate as
-      module during IP stitching.
-
-    """
+    that contains generated C++ code that can be used to generate a Vivado IP block.
+    The subsequent transformation is HLSSynthIP"""
 
     def __init__(self, fpgapart, clk):
         super().__init__()
@@ -90,6 +83,6 @@ class PrepareIP(Transformation):
 
     def apply(self, model):
         for node in model.graph.node:
-            if is_hls_node(node) or is_rtl_node(node):
+            if is_fpgadataflow_node(node) is True:
                 _codegen_single_node(node, model, self.fpgapart, self.clk)
         return (model, False)

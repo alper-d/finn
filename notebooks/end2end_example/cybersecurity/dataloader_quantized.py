@@ -26,12 +26,12 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-import math
-import numpy as np
-import pandas as pd
 import torch
+import pandas as pd
+import numpy as np
 from sklearn import preprocessing
 from sklearn.preprocessing import OneHotEncoder
+import math
 
 # quantize the UNSW_NB15 dataset and convert it to binary vectors
 # reimplementation
@@ -48,6 +48,7 @@ class UNSW_NB15_quantized(torch.utils.data.Dataset):
         onehot=False,
         train=True,
     ):
+
         self.dataframe = (
             pd.concat([pd.read_csv(file_path_train), pd.read_csv(file_path_test)])
             .reset_index()
@@ -76,7 +77,9 @@ class UNSW_NB15_quantized(torch.utils.data.Dataset):
         data_val = self.data[index][:-1]
         return data_val, target
 
-    def dec2bin(self, column: pd.Series, number_of_bits: int, left_msb: bool = True) -> pd.Series:
+    def dec2bin(
+        self, column: pd.Series, number_of_bits: int, left_msb: bool = True
+    ) -> pd.Series:
         """Convert a decimal pd.Series to binary pd.Series with numbers in their
         # base-2 equivalents.
         The output is a numpy nd array.
@@ -109,7 +112,7 @@ class UNSW_NB15_quantized(torch.utils.data.Dataset):
 
     def round_like_matlab_number(self, n: np.float64) -> int:
         """Round the input "n" like matlab uint32(n) cast (which also rounds) e.g.
-        0.5->1;  1.5->2; 2.3->2;   2.45->2"""
+        0.5->1;  1.5->2; 2.3->2;   2.45->2 """
         if n - math.floor(n) < 0.5:
             return math.floor(n)
         return math.ceil(n)
@@ -130,7 +133,6 @@ class UNSW_NB15_quantized(torch.utils.data.Dataset):
     def quantize_df(self, df):
         """Quantized the input dataframe. The scaling is done by multiplying
         every column by the inverse of the minimum of that column"""
-
         # gets the smallest positive number of a vector
         def get_min_positive_number(vector):
             return vector[vector > 0].min()
@@ -176,18 +178,24 @@ class UNSW_NB15_quantized(torch.utils.data.Dataset):
             column_data = np.clip(
                 column_data, 0, 4294967295
             )  # clip due to overflow of uint32 of matlab code
-            column_data = self.round_like_matlab_series(column_data)  # round like matlab
+            column_data = self.round_like_matlab_series(
+                column_data
+            )  # round like matlab
             column_data = column_data.astype(np.uint32)  # cast like matlab
 
             if column == "rate":
                 column_data.update(pd.Series(dict_correct_rate_values))
 
             python_quantized_df[column] = (
-                self.dec2bin(column_data, maxbits, left_msb=False).reshape((-1, 1)).flatten()
+                self.dec2bin(column_data, maxbits, left_msb=False)
+                .reshape((-1, 1))
+                .flatten()
             )
 
         for column in python_quantized_df.columns:
-            python_quantized_df[column] = python_quantized_df[column].apply(char_split).values
+            python_quantized_df[column] = (
+                python_quantized_df[column].apply(char_split).values
+            )
 
         python_quantized_df_separated = pd.DataFrame(
             np.column_stack(python_quantized_df.values.T.tolist())

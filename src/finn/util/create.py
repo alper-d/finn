@@ -28,13 +28,10 @@
 
 import numpy as np
 from onnx import TensorProto, helper
-from qonnx.core.datatype import DataType
-from qonnx.core.modelwrapper import ModelWrapper
-from qonnx.util.basic import (
-    calculate_signed_dot_prod_range,
-    gen_finn_dt_tensor,
-    qonnx_make_model,
-)
+
+from finn.core.datatype import DataType
+from finn.core.modelwrapper import ModelWrapper
+from finn.util.basic import calculate_signed_dot_prod_range, gen_finn_dt_tensor
 
 
 def hls_random_mlp_maker(layer_spec):
@@ -52,10 +49,10 @@ def hls_random_mlp_maker(layer_spec):
             # no activation, produce accumulators
             T = None
             tdt = None
-            if wdt == DataType["BIPOLAR"] and idt == DataType["BIPOLAR"]:
-                odt = DataType["UINT32"]
+            if wdt == DataType.BIPOLAR and idt == DataType.BIPOLAR:
+                odt = DataType.UINT32
             else:
-                odt = DataType["INT32"]
+                odt = DataType.INT32
         else:
             odt = act
             (min, max) = calculate_signed_dot_prod_range(idt, wdt, mw)
@@ -64,13 +61,13 @@ def hls_random_mlp_maker(layer_spec):
             # provide non-decreasing thresholds
             T = np.sort(T, axis=1)
             # generate thresholds for activation
-            if wdt == DataType["BIPOLAR"] and idt == DataType["BIPOLAR"]:
-                tdt = DataType["UINT32"]
+            if wdt == DataType.BIPOLAR and idt == DataType.BIPOLAR:
+                tdt = DataType.UINT32
                 # bias thresholds to be positive
                 T = np.ceil((T + mw) / 2)
                 assert (T >= 0).all()
             else:
-                tdt = DataType["INT32"]
+                tdt = DataType.INT32
         lyr["T"] = T
         lyr["tdt"] = tdt
         lyr["odt"] = odt
@@ -88,7 +85,7 @@ def hls_mlp_maker(layer_spec):
 
     graph = helper.make_graph(nodes=[], name="mlp", inputs=[], outputs=[])
 
-    model = qonnx_make_model(graph, producer_name="finn")
+    model = helper.make_model(graph, producer_name="finn")
     model = ModelWrapper(model)
 
     for lyr in layer_spec:
@@ -108,22 +105,26 @@ def hls_mlp_maker(layer_spec):
         odt = lyr["odt"]
 
         if i == 0:
-            global_in = helper.make_tensor_value_info(current_in_name, TensorProto.FLOAT, [1, mw])
+            global_in = helper.make_tensor_value_info(
+                current_in_name, TensorProto.FLOAT, [1, mw]
+            )
             model.graph.input.append(global_in)
 
         if i == len(layer_spec) - 1:
-            global_out = helper.make_tensor_value_info(current_out_name, TensorProto.FLOAT, [1, mh])
+            global_out = helper.make_tensor_value_info(
+                current_out_name, TensorProto.FLOAT, [1, mh]
+            )
             model.graph.output.append(global_out)
 
         # there are two ways to implement bipolar weights and inputs for
-        # MatrixVectorActivation:
+        # StreamingFC:
         # - specify their datatypes as such
         # - specify their datatypes as BINARY as use binaryXnorMode
-        if wdt == DataType["BIPOLAR"] and idt == DataType["BIPOLAR"]:
+        if wdt == DataType.BIPOLAR and idt == DataType.BIPOLAR:
             # we'll internally convert weights/inputs to binary and specify the
             # datatypes as such, and also set the binaryXnorMode attribute to 1
-            export_wdt = DataType["BINARY"]
-            export_idt = DataType["BINARY"]
+            export_wdt = DataType.BINARY
+            export_idt = DataType.BINARY
             binary_xnor_mode = 1
         else:
             export_wdt = wdt
@@ -133,7 +134,7 @@ def hls_mlp_maker(layer_spec):
         if T is not None:
             no_act = 0
             node_inp_list = [current_in_name, current_W_name, current_T_name]
-            if odt == DataType["BIPOLAR"]:
+            if odt == DataType.BIPOLAR:
                 actval = 0
             else:
                 actval = odt.min()
@@ -143,7 +144,7 @@ def hls_mlp_maker(layer_spec):
             actval = 0
             no_act = 1
         FCLayer_node = helper.make_node(
-            "MVAU",
+            "StreamingFCLayer_Batch",
             node_inp_list,
             [current_out_name],
             domain="finn.custom_op.fpgadataflow",

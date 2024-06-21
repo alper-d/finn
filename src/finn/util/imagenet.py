@@ -26,12 +26,11 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-import numpy as np
 import os
+import numpy as np
 from PIL import Image
-from qonnx.core.data_layout import NCHW, NHWC
-
-from finn.util.test import crop_center, resize_smaller_side
+from finn.core.data_layout import NCHW, NHWC
+from finn.util.test import resize_smaller_side, crop_center
 
 
 def get_val_images(n_images=100, interleave_classes=False):
@@ -137,7 +136,8 @@ def measure_topk(n_images, fxn_pre, fxn_exec, fxn_post, verbose=True, k=5):
 class_names = {
     0: "tench, Tinca tinca",
     1: "goldfish, Carassius auratus",
-    2: "great white shark, white shark, man-eater, man-eating shark, " "Carcharodon carcharias",
+    2: "great white shark, white shark, man-eater, man-eating shark, "
+    "Carcharodon carcharias",
     3: "tiger shark, Galeocerdo cuvieri",
     4: "hammerhead, hammerhead shark",
     5: "electric ray, crampfish, numbfish, torpedo",
@@ -183,7 +183,8 @@ class_names = {
     45: "Gila monster, Heloderma suspectum",
     46: "green lizard, Lacerta viridis",
     47: "African chameleon, Chamaeleo chamaeleon",
-    48: "Komodo dragon, Komodo lizard, dragon lizard, giant lizard, " "Varanus komodoensis",
+    48: "Komodo dragon, Komodo lizard, dragon lizard, giant lizard, "
+    "Varanus komodoensis",
     49: "African crocodile, Nile crocodile, Crocodylus niloticus",
     50: "American alligator, Alligator mississipiensis",
     51: "triceratops",
@@ -284,7 +285,8 @@ class_names = {
     144: "pelican",
     145: "king penguin, Aptenodytes patagonica",
     146: "albatross, mollymawk",
-    147: "grey whale, gray whale, devilfish, Eschrichtius gibbosus, " "Eschrichtius robustus",
+    147: "grey whale, gray whale, devilfish, Eschrichtius gibbosus, "
+    "Eschrichtius robustus",
     148: "killer whale, killer, orca, grampus, sea wolf, Orcinus orca",
     149: "dugong, Dugong dugon",
     150: "sea lion",
@@ -577,7 +579,8 @@ class_names = {
     433: "bathing cap, swimming cap",
     434: "bath towel",
     435: "bathtub, bathing tub, bath, tub",
-    436: "beach wagon, station wagon, wagon, estate car, beach waggon, " "station waggon, waggon",
+    436: "beach wagon, station wagon, wagon, estate car, beach waggon, "
+    "station waggon, waggon",
     437: "beacon, lighthouse, beacon light, pharos",
     438: "beaker",
     439: "bearskin, busby, shako",
@@ -632,7 +635,8 @@ class_names = {
     487: "cellular telephone, cellular phone, cellphone, cell, mobile phone",
     488: "chain",
     489: "chainlink fence",
-    490: "chain mail, ring mail, mail, chain armor, chain armour, ring armor, " "ring armour",
+    490: "chain mail, ring mail, mail, chain armor, chain armour, ring armor, "
+    "ring armour",
     491: "chain saw, chainsaw",
     492: "chest",
     493: "chiffonier, commode",

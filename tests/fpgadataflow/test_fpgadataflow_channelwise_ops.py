@@ -1,5 +1,4 @@
-# Copyright (c) 2020-2022, Xilinx, Inc.
-# Copyright (C) 2023, Advanced Micro Devices, Inc.
+# Copyright (c) 2020, Xilinx
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -31,34 +30,35 @@ import pytest
 
 import numpy as np
 from onnx import TensorProto, helper
-from qonnx.core.datatype import DataType
-from qonnx.core.modelwrapper import ModelWrapper
-from qonnx.custom_op.registry import getCustomOp
-from qonnx.transformation.general import GiveUniqueNodeNames
-from qonnx.util.basic import gen_finn_dt_tensor, qonnx_make_model
 
 import finn.core.onnx_exec as oxe
-from finn.analysis.fpgadataflow.exp_cycles_per_layer import exp_cycles_per_layer
 from finn.analysis.fpgadataflow.hls_synth_res_estimation import hls_synth_res_estimation
+from finn.core.datatype import DataType
+from finn.core.modelwrapper import ModelWrapper
+from finn.transformation.fpgadataflow.prepare_ip import PrepareIP
+from finn.transformation.fpgadataflow.prepare_cppsim import PrepareCppSim
 from finn.transformation.fpgadataflow.compile_cppsim import CompileCppSim
 from finn.transformation.fpgadataflow.hlssynth_ip import HLSSynthIP
-from finn.transformation.fpgadataflow.prepare_cppsim import PrepareCppSim
-from finn.transformation.fpgadataflow.prepare_ip import PrepareIP
-from finn.transformation.fpgadataflow.prepare_rtlsim import PrepareRTLSim
 from finn.transformation.fpgadataflow.set_exec_mode import SetExecMode
-from finn.transformation.fpgadataflow.specialize_layers import SpecializeLayers
+from finn.transformation.general import GiveUniqueNodeNames
+from finn.transformation.fpgadataflow.prepare_rtlsim import PrepareRTLSim
+from finn.util.basic import gen_finn_dt_tensor
+from finn.custom_op.registry import getCustomOp
+from finn.analysis.fpgadataflow.exp_cycles_per_layer import exp_cycles_per_layer
 
 
 def make_modelwrapper(C, pe, idt, odt, pdt, func, vecs):
     NumChannels = C.shape[0]
 
     inp = helper.make_tensor_value_info("inp", TensorProto.FLOAT, vecs + [NumChannels])
-    outp = helper.make_tensor_value_info("outp", TensorProto.FLOAT, vecs + [NumChannels])
+    outp = helper.make_tensor_value_info(
+        "outp", TensorProto.FLOAT, vecs + [NumChannels]
+    )
 
     node_inp_list = ["inp", "const"]
 
     node = helper.make_node(
-        "ChannelwiseOp",
+        "ChannelwiseOp_Batch",
         node_inp_list,
         ["outp"],
         domain="finn.custom_op.fpgadataflow",
@@ -70,11 +70,10 @@ def make_modelwrapper(C, pe, idt, odt, pdt, func, vecs):
         outputDataType=odt.name,
         paramDataType=pdt.name,
         numInputVectors=vecs,
-        preferred_impl_style="hls",
     )
     graph = helper.make_graph(nodes=[node], name="graph", inputs=[inp], outputs=[outp])
 
-    model = qonnx_make_model(graph, producer_name="model")
+    model = helper.make_model(graph, producer_name="model")
     model = ModelWrapper(model)
 
     model.set_tensor_datatype("inp", idt)
@@ -86,11 +85,11 @@ def make_modelwrapper(C, pe, idt, odt, pdt, func, vecs):
 
 
 # activation: None or DataType
-@pytest.mark.parametrize("act", [DataType["INT8"]])
+@pytest.mark.parametrize("act", [DataType.INT8])
 # input datatype
-@pytest.mark.parametrize("idt", [DataType["INT4"]])
+@pytest.mark.parametrize("idt", [DataType.INT4])
 # param datatype
-@pytest.mark.parametrize("pdt", [DataType["INT4"]])
+@pytest.mark.parametrize("pdt", [DataType.INT4])
 # folding, -1 is maximum possible
 @pytest.mark.parametrize("nf", [-1, 2])
 # number of input features
@@ -101,7 +100,6 @@ def make_modelwrapper(C, pe, idt, odt, pdt, func, vecs):
 @pytest.mark.parametrize("func", ["add", "mul"])
 # execution mode
 @pytest.mark.parametrize("exec_mode", ["cppsim", "rtlsim"])
-@pytest.mark.fpgadataflow
 @pytest.mark.vivado
 @pytest.mark.slow
 def test_fpgadataflow_channelwise_ops(idt, act, pdt, nf, ich, func, vecs, exec_mode):
@@ -112,34 +110,12 @@ def test_fpgadataflow_channelwise_ops(idt, act, pdt, nf, ich, func, vecs, exec_m
 
     # generate input and param data
     x = gen_finn_dt_tensor(idt, tuple(vecs + [ich]))
+    # C = np.random.randint(idt.min(), idt.max() + 1, ich).astype(np.float32)
     C = gen_finn_dt_tensor(pdt, (ich))
 
     odt = act
 
-    # create model
     model = make_modelwrapper(C, pe, idt, odt, pdt, func, vecs)
-
-    # package input data as dictionary
-    input_dict = {"inp": x}
-
-    oshape = model.get_tensor_shape("outp")
-
-    C_reshaped = np.broadcast_to(C.flatten(), x.shape)
-    if func == "add":
-        y = x + C_reshaped
-    elif func == "mul":
-        y = x * C_reshaped
-
-    y_expected = y.reshape(oshape)
-
-    # verify hw abstraction layer
-    y_produced = oxe.execute_onnx(model, input_dict)["outp"]
-
-    y_produced = y_produced.reshape(y_expected.shape)
-
-    assert (y_produced == y_expected).all(), "HW layer execution failed"
-
-    model = model.transform(SpecializeLayers())
 
     if exec_mode == "cppsim":
         model = model.transform(PrepareCppSim())
@@ -154,18 +130,30 @@ def test_fpgadataflow_channelwise_ops(idt, act, pdt, nf, ich, func, vecs, exec_m
     else:
         raise Exception("Unknown exec_mode")
 
+    # package input data as dictionary
+    input_dict = {"inp": x}
+
+    oshape = model.get_tensor_shape("outp")
+
+    C_reshaped = np.broadcast_to(C.flatten(), x.shape)
+    if func == "add":
+        y = x + C_reshaped
+    elif func == "mul":
+        y = x * C_reshaped
+
+    y_expected = y.reshape(oshape)
     # execute model
     y_produced = oxe.execute_onnx(model, input_dict)["outp"]
 
     y_produced = y_produced.reshape(y_expected.shape)
 
-    assert (y_produced == y_expected).all(), exec_mode + " failed"
+    assert (y_produced == y_expected).all(), "cppsim failed"
 
     if exec_mode == "rtlsim":
         hls_synt_res_est = model.analysis(hls_synth_res_estimation)
-        assert "ChannelwiseOp_hls_0" in hls_synt_res_est
+        assert "ChannelwiseOp_Batch_0" in hls_synt_res_est
 
-        node = model.get_nodes_by_op_type("ChannelwiseOp_hls")[0]
+        node = model.get_nodes_by_op_type("ChannelwiseOp_Batch")[0]
         inst = getCustomOp(node)
         cycles_rtlsim = inst.get_nodeattr("cycles_rtlsim")
         exp_cycles_dict = model.analysis(exp_cycles_per_layer)

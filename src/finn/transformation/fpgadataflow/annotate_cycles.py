@@ -1,5 +1,4 @@
-# Copyright (c) 2020, Xilinx, Inc.
-# Copyright (C) 2024, Advanced Micro Devices, Inc.
+# Copyright (c) 2020, Xilinx
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -27,12 +26,11 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-import qonnx.custom_op.registry as registry
-from qonnx.core.modelwrapper import ModelWrapper
-from qonnx.custom_op.registry import getCustomOp
-from qonnx.transformation.base import Transformation
-
-from finn.util.fpgadataflow import is_hls_node, is_rtl_node
+import finn.custom_op.registry as registry
+from finn.transformation.base import Transformation
+from finn.transformation.move_reshape import _is_fpgadataflow_node
+from finn.core.modelwrapper import ModelWrapper
+from finn.custom_op.registry import getCustomOp
 
 
 class AnnotateCycles(Transformation):
@@ -47,7 +45,7 @@ class AnnotateCycles(Transformation):
         graph = model.graph
         # annotate node cycles
         for node in graph.node:
-            if is_hls_node(node) or is_rtl_node(node):
+            if _is_fpgadataflow_node(node):
                 op_inst = registry.getCustomOp(node)
                 cycles = op_inst.get_exp_cycles()
                 op_inst.set_nodeattr("cycles_estimate", cycles)

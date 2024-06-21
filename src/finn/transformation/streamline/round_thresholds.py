@@ -27,7 +27,8 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import numpy as np
-from qonnx.transformation.base import Transformation
+
+from finn.transformation.base import Transformation
 
 
 class RoundAndClipThresholds(Transformation):
@@ -57,7 +58,8 @@ class RoundAndClipThresholds(Transformation):
                     model.set_tensor_datatype(n.input[1], idtype)
                     graph_modified = True
                 if idtype.is_integer() and (
-                    (Tnew < (idtype.min() - 1)).any() or (Tnew > (idtype.max() + 1)).any()
+                    (Tnew < (idtype.min() - 1)).any()
+                    or (Tnew > (idtype.max() + 1)).any()
                 ):
                     # clip any large thresholds to input range + 1
                     Tnew = np.clip(Tnew, idtype.min() - 1, idtype.max() + 1)

@@ -26,9 +26,8 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-import qonnx.custom_op.registry as registry
-
-from finn.util.fpgadataflow import is_hls_node, is_rtl_node
+import finn.custom_op.registry as registry
+from finn.util.fpgadataflow import is_fpgadataflow_node
 
 
 def res_estimation(model):
@@ -41,7 +40,7 @@ def res_estimation(model):
 
     res_dict = {}
     for node in model.graph.node:
-        if is_hls_node(node) or is_rtl_node(node):
+        if is_fpgadataflow_node(node) is True:
             inst = registry.getCustomOp(node)
             res_dict[node.name] = inst.node_res_estimation()
 
@@ -59,10 +58,13 @@ def res_estimation_complete(model):
 
     res_dict = {}
     for node in model.graph.node:
-        if is_hls_node(node) or is_rtl_node(node):
-            inst = registry.getCustomOp(node)
+        if is_fpgadataflow_node(node) is True:
             op_type = node.op_type
-            if op_type.startswith("MVAU") or op_type.startswith("VVAU"):
+            inst = registry.getCustomOp(node)
+            if (
+                op_type == "StreamingFCLayer_Batch"
+                or op_type == "Vector_Vector_Activate_Batch"
+            ):
                 orig_restype = inst.get_nodeattr("resType")
                 res_dict[node.name] = []
                 inst.set_nodeattr("resType", "dsp")
@@ -70,7 +72,7 @@ def res_estimation_complete(model):
                 inst.set_nodeattr("resType", "lut")
                 res_dict[node.name].append(inst.node_res_estimation())
                 inst.set_nodeattr("resType", orig_restype)
-            elif op_type.startswith("ConvolutionInputGenerator"):
+            elif op_type == "ConvolutionInputGenerator":
                 orig_ramstyle = inst.get_nodeattr("ram_style")
                 res_dict[node.name] = []
                 inst.set_nodeattr("ram_style", "block")

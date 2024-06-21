@@ -1,63 +1,30 @@
-# Copyright (c) 2020, Xilinx
-# All rights reserved.
-#
-# Redistribution and use in source and binary forms, with or without
-# modification, are permitted provided that the following conditions are met:
-#
-# * Redistributions of source code must retain the above copyright notice, this
-#   list of conditions and the following disclaimer.
-#
-# * Redistributions in binary form must reproduce the above copyright notice,
-#   this list of conditions and the following disclaimer in the documentation
-#   and/or other materials provided with the distribution.
-#
-# * Neither the name of FINN nor the names of its
-#   contributors may be used to endorse or promote products derived from
-#   this software without specific prior written permission.
-#
-# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-import pytest
-
-import brevitas.onnx as bo
+import os
 import csv
 import numpy as np
-import os
+import brevitas.onnx as bo
 import torch
-import torchvision.datasets as datasets
-import torchvision.transforms as transforms
-from brevitas.export import export_qonnx
-from qonnx.core.modelwrapper import ModelWrapper
-from qonnx.transformation.fold_constants import FoldConstants
-from qonnx.transformation.general import (
-    GiveReadableTensorNames,
-    GiveUniqueNodeNames,
-    GiveUniqueParameterTensors,
-    RemoveStaticGraphInputs,
-)
-from qonnx.transformation.infer_data_layouts import InferDataLayouts
-from qonnx.transformation.infer_datatypes import InferDataTypes
-from qonnx.transformation.infer_shapes import InferShapes
-from qonnx.transformation.insert_topk import InsertTopK
-from qonnx.transformation.merge_onnx_models import MergeONNXModels
-from qonnx.util.cleanup import cleanup as qonnx_cleanup
-
-import finn.core.onnx_exec as oxe
-import finn.transformation.streamline.absorb as absorb
-import finn.util.imagenet as imagenet_util
-from finn.transformation.qonnx.convert_qonnx_to_finn import ConvertQONNXtoFINN
 from finn.util.basic import make_build_dir
 from finn.util.pytorch import NormalizePreProc
 from finn.util.test import get_test_model_trained
+from finn.core.modelwrapper import ModelWrapper
+from finn.transformation.infer_shapes import InferShapes
+from finn.transformation.infer_data_layouts import InferDataLayouts
+from finn.transformation.fold_constants import FoldConstants
+from finn.transformation.general import RemoveStaticGraphInputs
+from finn.transformation.infer_datatypes import InferDataTypes
+from finn.transformation.general import (
+    GiveReadableTensorNames,
+    GiveUniqueNodeNames,
+    GiveUniqueParameterTensors,
+)
+from finn.transformation.merge_onnx_models import MergeONNXModels
+import finn.transformation.streamline.absorb as absorb
+from finn.transformation.insert_topk import InsertTopK
+import finn.core.onnx_exec as oxe
+import finn.util.imagenet as imagenet_util
+import pytest
+import torchvision.datasets as datasets
+import torchvision.transforms as transforms
 
 # normalization (preprocessing) settings for MobileNet-v1 w4a4
 mean = [0.485, 0.456, 0.406]
@@ -65,7 +32,6 @@ std = 0.226
 ch = 3
 
 
-@pytest.mark.brevitas_export
 def test_brevitas_mobilenet_preproc():
     if "IMAGENET_VAL_PATH" not in os.environ.keys():
         pytest.skip("Can't do validation without IMAGENET_VAL_PATH")
@@ -102,8 +68,10 @@ def test_brevitas_mobilenet_preproc():
         assert (finn_img == pyt_img).all()
 
 
-@pytest.mark.brevitas_export
 @pytest.mark.slow
+# marked as XFAIL until Brevitas export issues are resolved:
+# https://github.com/Xilinx/brevitas/issues/173
+@pytest.mark.xfail
 def test_brevitas_compare_exported_mobilenet():
     if "IMAGENET_VAL_PATH" not in os.environ.keys():
         pytest.skip("Can't do validation without IMAGENET_VAL_PATH")
@@ -113,10 +81,8 @@ def test_brevitas_compare_exported_mobilenet():
     # export preprocessing
     preproc_onnx = export_onnx_path + "/quant_mobilenet_v1_4b_preproc.onnx"
     preproc = NormalizePreProc(mean, std, ch)
-    export_qonnx(preproc, torch.randn(1, 3, 224, 224), preproc_onnx)
-    qonnx_cleanup(preproc_onnx, out_file=preproc_onnx)
+    bo.export_finn_onnx(preproc, (1, 3, 224, 224), preproc_onnx)
     preproc_model = ModelWrapper(preproc_onnx)
-    preproc_model = preproc_model.transform(ConvertQONNXtoFINN())
     preproc_model = preproc_model.transform(InferShapes())
     preproc_model = preproc_model.transform(GiveUniqueNodeNames())
     preproc_model = preproc_model.transform(GiveUniqueParameterTensors())
@@ -126,10 +92,8 @@ def test_brevitas_compare_exported_mobilenet():
     mobilenet = get_test_model_trained("mobilenet", 4, 4)
     if debug_mode:
         dbg_hook = bo.enable_debug(mobilenet)
-    export_qonnx(mobilenet, torch.randn(1, 3, 224, 224), finn_onnx)
-    qonnx_cleanup(finn_onnx, out_file=finn_onnx)
+    bo.export_finn_onnx(mobilenet, (1, 3, 224, 224), finn_onnx)
     model = ModelWrapper(finn_onnx)
-    model = model.transform(ConvertQONNXtoFINN())
     model = model.transform(InferShapes())
     model = model.transform(FoldConstants())
     model = model.transform(RemoveStaticGraphInputs())
@@ -149,7 +113,9 @@ def test_brevitas_compare_exported_mobilenet():
     model = model.transform(MergeONNXModels(preproc_model))
     model.save(export_onnx_path + "/quant_mobilenet_v1_4b.onnx")
 
-    with open(export_onnx_path + "/mobilenet_validation.csv", "w", newline="") as csvfile:
+    with open(
+        export_onnx_path + "/mobilenet_validation.csv", "w", newline=""
+    ) as csvfile:
         writer = csv.writer(csvfile)
         writer.writerow(
             [
@@ -166,7 +132,7 @@ def test_brevitas_compare_exported_mobilenet():
         workload = imagenet_util.get_val_images(n_images, interleave_classes=True)
         all_inds_ok = True
         all_probs_ok = True
-        for img_path, target_id in workload:
+        for (img_path, target_id) in workload:
             img_np = imagenet_util.load_resize_crop(img_path)
             img_torch = torch.from_numpy(img_np).float()
             # do forward pass in PyTorch/Brevitas

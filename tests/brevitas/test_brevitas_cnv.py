@@ -26,47 +26,40 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+import os
+import pkg_resources as pk
 import pytest
 
-import importlib_resources as importlib
+import brevitas.onnx as bo
 import numpy as np
-import os
 import torch
-from brevitas.export import export_qonnx
-from qonnx.core.modelwrapper import ModelWrapper
-from qonnx.transformation.fold_constants import FoldConstants
-from qonnx.transformation.general import GiveUniqueNodeNames, RemoveStaticGraphInputs
-from qonnx.transformation.infer_shapes import InferShapes
-from qonnx.util.cleanup import cleanup as qonnx_cleanup
 
 import finn.core.onnx_exec as oxe
-from finn.transformation.qonnx.convert_qonnx_to_finn import ConvertQONNXtoFINN
+from finn.core.modelwrapper import ModelWrapper
+from finn.transformation.fold_constants import FoldConstants
+from finn.transformation.infer_shapes import InferShapes
+from finn.transformation.general import GiveUniqueNodeNames, RemoveStaticGraphInputs
 from finn.util.test import get_test_model_trained
 
 export_onnx_path = "test_brevitas_cnv.onnx"
 
 
-@pytest.mark.brevitas_export
 @pytest.mark.parametrize("abits", [1, 2])
 @pytest.mark.parametrize("wbits", [1, 2])
 def test_brevitas_cnv_export_exec(wbits, abits):
     if wbits > abits:
         pytest.skip("No wbits > abits cases at the moment")
     cnv = get_test_model_trained("CNV", wbits, abits)
-    ishape = (1, 3, 32, 32)
-    export_qonnx(cnv, torch.randn(ishape), export_onnx_path)
-    qonnx_cleanup(export_onnx_path, out_file=export_onnx_path)
+    bo.export_finn_onnx(cnv, (1, 3, 32, 32), export_onnx_path)
     model = ModelWrapper(export_onnx_path)
-    model = model.transform(ConvertQONNXtoFINN())
     model = model.transform(GiveUniqueNodeNames())
     model = model.transform(InferShapes())
     model = model.transform(FoldConstants())
     model = model.transform(RemoveStaticGraphInputs())
     assert len(model.graph.input) == 1
     assert len(model.graph.output) == 1
-    ref = importlib.files("finn.qnn-data") / "cifar10/cifar10-test-data-class3.npz"
-    with importlib.as_file(ref) as fn:
-        input_tensor = np.load(fn)["arr_0"].astype(np.float32)
+    fn = pk.resource_filename("finn.qnn-data", "cifar10/cifar10-test-data-class3.npz")
+    input_tensor = np.load(fn)["arr_0"].astype(np.float32)
     input_tensor = input_tensor / 255
     assert input_tensor.shape == (1, 3, 32, 32)
     # run using FINN-based execution

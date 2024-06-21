@@ -25,17 +25,16 @@
 # CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-import os
-import qonnx.custom_op.registry as registry
 import warnings
+import os
 import xml.etree.ElementTree as ET
 
-from finn.util.fpgadataflow import is_hls_node
+import finn.custom_op.registry as registry
+from finn.util.fpgadataflow import is_fpgadataflow_node
 
 
 def hls_synth_res_estimation(model):
-    """Extracts the FPGA resource results from the Vitis HLS synthesis estimates.
-    Note that this analysis pass only works on nodes that have an HLS backend.
+    """Extracts the FPGA resource results from the Vivado HLS synthesis estimates.
     Ensure that all nodes have unique names (by calling the GiveUniqueNodeNames
     transformation) prior to calling this analysis pass to ensure all nodes are
     visible in the results.
@@ -44,7 +43,7 @@ def hls_synth_res_estimation(model):
 
     res_dict = {}
     for node in model.graph.node:
-        if is_hls_node(node):
+        if is_fpgadataflow_node(node) is True:
             # init values to zero
             res_dict[node.name] = dict()
             res_dict[node.name]["BRAM_18K"] = 0

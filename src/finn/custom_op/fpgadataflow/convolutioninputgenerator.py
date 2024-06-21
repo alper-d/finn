@@ -1,4 +1,4 @@
-# Copyright (C) 2023, Advanced Micro Devices, Inc.
+# Copyright (c) 2020, Xilinx
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -26,38 +26,47 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-import numpy as np
-from onnx import TensorProto, helper
-from qonnx.core.datatype import DataType
-from qonnx.core.modelwrapper import ModelWrapper
-from qonnx.custom_op.general.im2col import compute_conv_output_dim
-from qonnx.custom_op.registry import getCustomOp
-from qonnx.util.basic import qonnx_make_model
+import os
 
-from finn.custom_op.fpgadataflow.hwcustomop import HWCustomOp
+import math
+import numpy as np
+
+from finn.core.datatype import DataType
+from finn.custom_op.fpgadataflow.hlscustomop import HLSCustomOp
+from finn.custom_op.general.im2col import compute_conv_output_dim
+from onnx import TensorProto, helper
+from finn.util.data_packing import npy_to_rtlsim_input, rtlsim_output_to_npy
 
 # ONNX i/o tensor shape assumptions for ConvolutionInputGenerator:
 # input 0 is the input tensor, shape NHWC = (1, IFMDim, IFMDim, IFMChannels)
 # output 0 is the output tensor, shape NHWC:
 #     = (1, OFMDim, OFMDim, (ConvKernelDim^2)*IFMChannels)
 
+# note: the actual data layout produced by the hlslib kernels is different
+# for depthwise and non-depthwise ops.
+# * non-depthwise SWG: (1, OFMDim, OFMDim, K, K, IFMChannels/SIMD, SIMD)
+# * depthwise SWG: (1, OFMDim, OFMDim, IFMChannels/SIMD, K, K, SIMD)
+# see test_fpgadataflow_slidingwindow.py for an example of how to transform
+# between the two layouts
 
-class ConvolutionInputGenerator(HWCustomOp):
-    """Abstraction layer for HW implementation of ConvolutionInputGenerator"""
 
-    def __init__(self, onnx_node, **kwargs):
-        super().__init__(onnx_node, **kwargs)
+class ConvolutionInputGenerator(HLSCustomOp):
+    """Class that corresponds to one of the finn-hlslib ConvolutionInputGenerator
+    (sliding window) function variants. Depending on the combination of
+    attributes (e.g. depthwise or not, whether k % stride is 0) a different
+    variant will be picked for the actual HLS implementation."""
+
+    def __init__(self, onnx_node):
+        super().__init__(onnx_node)
 
     def get_nodeattr_types(self):
         my_attrs = {
-            "ConvKernelDim": ("ints", True, []),  # [H, W] = [Y, X]
+            "ConvKernelDim": ("i", True, 0),
             "IFMChannels": ("i", True, 0),
-            "IFMDim": ("ints", True, []),  # [H, W] = [Y, X]
-            "OFMDim": ("ints", True, []),  # [H, W] = [Y, X]
+            "IFMDim": ("i", True, 0),
+            "OFMDim": ("i", True, 0),
             "SIMD": ("i", True, 0),
-            "Stride": ("ints", True, [1, 1]),  # [H, W] = [Y, X]
-            # note: only dilation=1 supported for now
-            "Dilation": ("ints", True, [1, 1]),  # [H, W] = [Y, X]
+            "Stride": ("i", True, 0),
             # FINN DataTypes for inputs, weights, outputs
             "inputDataType": ("s", True, ""),
             "outputDataType": ("s", True, ""),
@@ -73,60 +82,48 @@ class ConvolutionInputGenerator(HWCustomOp):
                 "distributed",
                 {"auto", "block", "distributed", "ultra"},
             ),
-            "parallel_window": ("i", False, 0, {0, 1}),
-            # 1D (True) or 2D (False) spatial data
-            "is1D": ("i", False, 0),
-            # Enable reprogrammable implementation to change FM dimensions,
-            # stride, or dilation during runtime (requires parallel_window = 0)
-            "dynamic_mode": ("i", False, 0, {0, 1}),
         }
         my_attrs.update(super().get_nodeattr_types())
         return my_attrs
 
-    def get_normal_input_shape(self, ind=0):
-        ifm_dim_h, ifm_dim_w = self.get_nodeattr("IFMDim")
+    def get_normal_input_shape(self):
+
+        ifm_dim = self.get_nodeattr("IFMDim")
         ifm_ch = self.get_nodeattr("IFMChannels")
-        ishape = (1, ifm_dim_h, ifm_dim_w, ifm_ch)
+
+        ishape = (1, ifm_dim, ifm_dim, ifm_ch)
         return ishape
 
-    def get_folded_input_shape(self, ind=0):
-        ifm_dim_h, ifm_dim_w = self.get_nodeattr("IFMDim")
+    def get_folded_input_shape(self):
+        ifm_dim = self.get_nodeattr("IFMDim")
         ifm_ch = self.get_nodeattr("IFMChannels")
         simd = self.get_nodeattr("SIMD")
         assert ifm_ch % simd == 0, "SIMD must divide IFMChannels"
         wf = int(ifm_ch / simd)
-        folded_ishape = (1, ifm_dim_h, ifm_dim_w, wf, simd)
+        folded_ishape = (1, ifm_dim, ifm_dim, wf, simd)
         return folded_ishape
 
-    def get_normal_output_shape(self, ind=0):
-        k_h, k_w = self.get_nodeattr("ConvKernelDim")
-        ifm_dim_h, ifm_dim_w = self.get_nodeattr("IFMDim")
+    def get_normal_output_shape(self):
+        k = self.get_nodeattr("ConvKernelDim")
+        ifm_dim = self.get_nodeattr("IFMDim")
         ifm_ch = self.get_nodeattr("IFMChannels")
-        stride_h, stride_w = self.get_nodeattr("Stride")
-        dilation_h, dilation_w = self.get_nodeattr("Dilation")
+        stride = self.get_nodeattr("Stride")
         pad = 0
-        ofm_dim_h = compute_conv_output_dim(ifm_dim_h, k_h, stride_h, pad, dilation_h)
-        ofm_dim_w = compute_conv_output_dim(ifm_dim_w, k_w, stride_w, pad, dilation_w)
-        oshape = (1, ofm_dim_h, ofm_dim_w, k_h * k_w * ifm_ch)
+        ofm_dim = compute_conv_output_dim(ifm_dim, k, stride, pad)
+        oshape = (1, ofm_dim, ofm_dim, k * k * ifm_ch)
         return oshape
 
-    def get_folded_output_shape(self, ind=0):
-        k_h, k_w = self.get_nodeattr("ConvKernelDim")
-        ifm_dim_h, ifm_dim_w = self.get_nodeattr("IFMDim")
+    def get_folded_output_shape(self):
+        k = self.get_nodeattr("ConvKernelDim")
+        ifm_dim = self.get_nodeattr("IFMDim")
         ifm_ch = self.get_nodeattr("IFMChannels")
-        stride_h, stride_w = self.get_nodeattr("Stride")
-        dilation_h, dilation_w = self.get_nodeattr("Dilation")
+        stride = self.get_nodeattr("Stride")
         simd = self.get_nodeattr("SIMD")
         pad = 0
-        ofm_dim_h = compute_conv_output_dim(ifm_dim_h, k_h, stride_h, pad, dilation_h)
-        ofm_dim_w = compute_conv_output_dim(ifm_dim_w, k_w, stride_w, pad, dilation_w)
+        ofm_dim = compute_conv_output_dim(ifm_dim, k, stride, pad)
         assert ifm_ch % simd == 0, "SIMD must divide IFMChannels"
-        if self.use_parallel_window_output():
-            wf = int((ifm_ch) // simd)
-            folded_oshape = (1, ofm_dim_h, ofm_dim_w, wf, k_h * k_w * simd)
-        else:
-            wf = int((k_h * k_w * ifm_ch) // simd)
-            folded_oshape = (1, ofm_dim_h, ofm_dim_w, wf, simd)
+        wf = int((k * k * ifm_ch) // simd)
+        folded_oshape = (1, ofm_dim, ofm_dim, wf, simd)
         return folded_oshape
 
     def make_shape_compatible_op(self, model):
@@ -135,7 +132,18 @@ class ConvolutionInputGenerator(HWCustomOp):
         ishape = tuple(model.get_tensor_shape(self.onnx_node.input[0]))
         assert ishape == exp_ishape, "Unexpect input shape for ConvInpGen."
         # implement tensor with correct shape
-        return super().make_const_shape_op(oshape)
+        values = np.random.randn(*oshape).astype(np.float32)
+        return helper.make_node(
+            "Constant",
+            inputs=[],
+            outputs=[self.onnx_node.output[0]],
+            value=helper.make_tensor(
+                name="const_tensor",
+                data_type=TensorProto.FLOAT,
+                dims=values.shape,
+                vals=values.flatten().astype(float),
+            ),
+        )
 
     def infer_node_datatype(self, model):
         node = self.onnx_node
@@ -146,15 +154,15 @@ class ConvolutionInputGenerator(HWCustomOp):
     def verify_node(self):
         pass
 
-    def get_input_datatype(self, ind=0):
+    def get_input_datatype(self):
         """Returns FINN DataType of input."""
         return DataType[self.get_nodeattr("inputDataType")]
 
-    def get_output_datatype(self, ind=0):
+    def get_output_datatype(self):
         """Returns FINN DataType of output."""
         return DataType[self.get_nodeattr("outputDataType")]
 
-    def get_instream_width(self, ind=0):
+    def get_instream_width(self):
         """Returns stream width, input and output stream width are equal for
         the sliding window function"""
         ibits = self.get_input_datatype().bitwidth()
@@ -164,94 +172,311 @@ class ConvolutionInputGenerator(HWCustomOp):
         in_width = simd * ibits
         return in_width
 
-    def get_outstream_width(self, ind=0):
-        if self.use_parallel_window_output():
-            # feed all window pixels in parallel
-            k_h, k_w = self.get_nodeattr("ConvKernelDim")
-            return self.get_instream_width() * k_h * k_w
-        else:
-            # if parallel variant not in use: same width for output and input stream
-            return self.get_instream_width()
+    def get_outstream_width(self):
+        """Returns stream width, input and output stream width are equal for
+        the sliding window function, so the function to determine the input
+        stream width can be reused."""
+        return self.get_instream_width()
 
     def get_number_output_values(self):
         folded_oshape = self.get_folded_output_shape()
         num_output_elems = np.prod(folded_oshape[:-1])
         return num_output_elems
 
-    def get_1d_conv_attrs_normalized(self):
-        # support both (1, D) and (D, 1) cases transparently:
-        # For the kernel, presenting the input data of size D as
-        # [H, W] = [Y, X] = [1, D] or [D, 1]
-        # effectively gives the same result.
-        # For consistency and ease of programming, this function
-        # returns the attributes of the layer as follows:
-        # [H, W] = [Y, X] = [1, D] or [D, 1] are always mapped to [1, D].
-        # The dummy ('1') dimension is the Y-dimension.
+    def get_exp_cycles(self):
+        simd = self.get_nodeattr("SIMD")
         ifm_ch = self.get_nodeattr("IFMChannels")
         k = self.get_nodeattr("ConvKernelDim")
         ifm_dim = self.get_nodeattr("IFMDim")
         ofm_dim = self.get_nodeattr("OFMDim")
         stride = self.get_nodeattr("Stride")
-        dilation = self.get_nodeattr("Dilation")
+        # since mmv != 1 is not supported yet, we set mmv for now to 1
+        mmv = 1
+        # see https://github.com/Xilinx/finn-hlslib/blob/master/slidingwindow.h
+        cycles_write_block = (ofm_dim * k * k * (ifm_ch / simd)) / mmv
+        cycles_read_block = stride * ifm_dim * (ifm_ch / simd)
+        max_cycles = max(cycles_write_block, cycles_read_block)
+        exp_cycles = ifm_dim * k * (ifm_ch / simd) + ofm_dim * max_cycles
 
-        # see defines() for an explanation
-        if ifm_dim[1] == 1:
-            ifm_dim = ifm_dim[::-1]
-            ofm_dim = ofm_dim[::-1]
-            k = k[::-1]
-            stride = stride[::-1]
-            dilation = dilation[::-1]
-
-        return (ifm_ch, ifm_dim, ofm_dim, k, stride, dilation)
-
-    def get_exp_cycles(self):
-        return 0
+        return int(exp_cycles)
 
     def bram_estimation(self):
-        return 0
-
-    def lut_estimation(self):
-        return 0
-
-    def uram_estimation(self):
-        return 0
-
-    def execute_node(self, context, graph):
-        # using Im2Col node to calculate output
-        node = self.onnx_node
+        simd = self.get_nodeattr("SIMD")
+        ifm_ch = self.get_nodeattr("IFMChannels")
         ifm_dim = self.get_nodeattr("IFMDim")
         k = self.get_nodeattr("ConvKernelDim")
-        s = self.get_nodeattr("Stride")
-        d = self.get_nodeattr("Dilation")
+        stride = self.get_nodeattr("Stride")
+        ram_style = self.get_nodeattr("ram_style")
+        if ram_style == "block" or ram_style == "auto":
+            ram_depth = ifm_dim * ifm_ch / simd
+            if ram_depth <= 512:
+                ram_width = 36
+            elif ram_depth <= 1024:
+                ram_width = 18
+            elif ram_depth <= 2048:
+                ram_width = 9
+            elif ram_depth <= 4096:
+                ram_width = 4
+            elif ram_depth <= 8192:
+                ram_width = 2
+            else:
+                ram_width = 1
+            return int(
+                (k + stride)
+                * (
+                    math.ceil(simd * self.get_input_datatype().bitwidth() / ram_width)
+                    * math.ceil(ifm_dim * ifm_ch / simd / ram_depth)
+                )
+            )
+        else:
+            return 0
+
+    def lut_estimation(self):
+        simd = self.get_nodeattr("SIMD")
         ifm_ch = self.get_nodeattr("IFMChannels")
-        inp_values = context[node.input[0]]
-        oshape = context[node.output[0]].shape
-        ishape = inp_values.shape
-        inp = helper.make_tensor_value_info(node.input[0], TensorProto.FLOAT, ishape)
-        outp = helper.make_tensor_value_info(node.output[0], TensorProto.FLOAT, oshape)
-        im2col_node = helper.make_node(
-            "Im2Col",
-            [node.input[0]],
-            [node.output[0]],
-            domain="qonnx.custom_op.general",
-            stride=[s[0], s[1]],
-            kernel_size=[k[0], k[1]],
-            dilations=[d[0], d[1]],
-            input_shape="(1,{},{},{})".format(ifm_dim[0], ifm_dim[1], ifm_ch),
-        )
-        graph_im2col = helper.make_graph(
-            nodes=[im2col_node],
-            name="single-im2col-exec",
-            inputs=[inp],
-            outputs=[outp],
+        ifm_dim = self.get_nodeattr("IFMDim")
+        k = self.get_nodeattr("ConvKernelDim")
+        stride = self.get_nodeattr("Stride")
+        ram_style = self.get_nodeattr("ram_style")
+        if ram_style == "distributed":
+            ram_luts = int(
+                (k + stride)
+                * (
+                    simd
+                    * self.get_input_datatype().bitwidth()
+                    * math.ceil(ifm_dim * ifm_ch / simd / 64)
+                )
+            )
+        else:
+            ram_luts = 0
+        return 300 + ram_luts
+
+    def uram_estimation(self):
+        simd = self.get_nodeattr("SIMD")
+        ifm_ch = self.get_nodeattr("IFMChannels")
+        ifm_dim = self.get_nodeattr("IFMDim")
+        k = self.get_nodeattr("ConvKernelDim")
+        stride = self.get_nodeattr("Stride")
+        ram_style = self.get_nodeattr("ram_style")
+        if ram_style == "ultra":
+            return int(
+                (k + stride)
+                * (
+                    math.ceil(simd * self.get_input_datatype().bitwidth() / 64)
+                    * math.ceil(ifm_dim * ifm_ch / simd / 4096)
+                )
+            )
+        else:
+            return 0
+
+    def execute_node(self, context, graph):
+        mode = self.get_nodeattr("exec_mode")
+        node = self.onnx_node
+        exp_ishape = self.get_normal_input_shape()
+        exp_oshape = self.get_normal_output_shape()
+        folded_ishape = self.get_folded_input_shape()
+        folded_oshape = self.get_folded_output_shape()
+
+        # TODO ensure codegen dir exists
+        if mode == "cppsim":
+            code_gen_dir = self.get_nodeattr("code_gen_dir_cppsim")
+        elif mode == "rtlsim":
+            code_gen_dir = self.get_nodeattr("code_gen_dir_ipgen")
+        else:
+            raise Exception(
+                """Invalid value for attribute exec_mode! Is currently set to: {}
+            has to be set to one of the following value ("cppsim", "rtlsim")""".format(
+                    mode
+                )
+            )
+
+        inp = context[node.input[0]]
+        assert str(inp.dtype) == "float32", "Input datatype is not float32"
+        assert (
+            inp.shape == exp_ishape
+        ), """Input shape doesn't
+        match expected shape (1, ifm_dim, ifm_dim, ifm_ch)."""
+        if self.get_input_datatype() == DataType.BIPOLAR:
+            # store bipolar activations as binary
+            inp = (inp + 1) / 2
+            export_idt = DataType.BINARY
+        else:
+            export_idt = self.get_input_datatype()
+        # reshape input into folded form
+        inp = inp.reshape(folded_ishape)
+        # make copy before saving array
+        reshaped_input = inp.copy()
+        np.save(os.path.join(code_gen_dir, "input_0.npy"), reshaped_input)
+
+        if mode == "cppsim":
+            # execute the precompiled model
+            super().exec_precompiled_singlenode_model()
+            # load output npy file
+            super().npy_to_dynamic_output(context)
+            assert (
+                context[node.output[0]].shape == folded_oshape
+            ), "cppsim \
+            did not produce expected ofolded utput shape"
+            context[node.output[0]] = context[node.output[0]].reshape(*exp_oshape)
+        elif mode == "rtlsim":
+            sim = self.get_rtlsim()
+            nbits = self.get_instream_width()
+            rtlsim_inp = npy_to_rtlsim_input(
+                "{}/input_0.npy".format(code_gen_dir), export_idt, nbits
+            )
+            super().reset_rtlsim(sim)
+            super().toggle_clk(sim)
+            rtlsim_output = self.rtlsim(sim, rtlsim_inp)
+            odt = export_idt
+            target_bits = odt.bitwidth()
+            packed_bits = self.get_outstream_width()
+            out_npy_path = "{}/output.npy".format(code_gen_dir)
+            out_shape = self.get_folded_output_shape()
+            rtlsim_output_to_npy(
+                rtlsim_output, out_npy_path, odt, out_shape, packed_bits, target_bits
+            )
+            # load and reshape output
+            output = np.load(out_npy_path)
+            output = np.asarray([output], dtype=np.float32).reshape(*exp_oshape)
+            context[node.output[0]] = output
+        else:
+            raise Exception(
+                """Invalid value for attribute exec_mode! Is currently set to: {}
+            has to be set to one of the following value ("cppsim", "rtlsim")""".format(
+                    mode
+                )
+            )
+        # binary -> bipolar if needed
+        if self.get_output_datatype() == DataType.BIPOLAR:
+            out = context[node.output[0]]
+            out = 2 * out - 1
+            context[node.output[0]] = out
+        assert (
+            context[node.output[0]].shape == exp_oshape
+        ), """Output
+        shape doesn't match expected shape (1, ofm_dim, ofm_dim, k*k*ifm_ch)."""
+
+    def global_includes(self):
+        self.code_gen_dict["$GLOBALS$"] = ['#include "slidingwindow.h"']
+
+    def defines(self, var):
+        numReps = 1
+        self.code_gen_dict["$DEFINES$"] = [
+            """#define ConvKernelDim1 {}\n #define IFMChannels1 {}\n
+            #define Input_precision1 {}\n #define IFMDim1 {}\n
+            #define OFMDim1 {}\n #define SIMD1 {}\n
+            #define Stride1 {}\n #define numReps {}""".format(
+                self.get_nodeattr("ConvKernelDim"),
+                self.get_nodeattr("IFMChannels"),
+                self.get_input_datatype().bitwidth(),
+                self.get_nodeattr("IFMDim"),
+                self.get_nodeattr("OFMDim"),
+                self.get_nodeattr("SIMD"),
+                self.get_nodeattr("Stride"),
+                numReps,
+            )
+        ]
+
+    def read_npy_data(self):
+        code_gen_dir = self.get_nodeattr("code_gen_dir_cppsim")
+        dtype = self.get_input_datatype()
+        if dtype == DataType.BIPOLAR:
+            # use binary for bipolar storage
+            dtype = DataType.BINARY
+        elem_bits = dtype.bitwidth()
+        packed_bits = self.get_instream_width()
+        packed_hls_type = "ap_uint<%d>" % packed_bits
+        elem_hls_type = dtype.get_hls_datatype_str()
+        npy_type = "float"
+        npy_in = "%s/input_0.npy" % code_gen_dir
+        self.code_gen_dict["$READNPYDATA$"] = []
+        self.code_gen_dict["$READNPYDATA$"].append(
+            'npy2apintstream<%s, %s, %d, %s>("%s", in0);'
+            % (packed_hls_type, elem_hls_type, elem_bits, npy_type, npy_in)
         )
 
-        opset_version = self.onnx_opset_version
-        opset_imports = [helper.make_opsetid("", opset_version)]
-        onnx_kwargs = {"opset_imports": opset_imports}
-        model_im2col = ModelWrapper(qonnx_make_model(graph_im2col, **onnx_kwargs))
-        model_im2col.set_tensor_datatype(node.input[0], self.get_input_datatype())
-        # use execution function from Im2Col node
-        # this automatically updates the execution context
-        inst = getCustomOp(im2col_node)
-        inst.execute_node(context, model_im2col.graph)
+    def strm_decl(self):
+        self.code_gen_dict["$STREAMDECLARATIONS$"] = []
+        self.code_gen_dict["$STREAMDECLARATIONS$"].append(
+            'hls::stream<ap_uint<{}>> in0 ("in0");'.format(self.get_instream_width())
+        )
+        self.code_gen_dict["$STREAMDECLARATIONS$"].append(
+            'hls::stream<ap_uint<{}>> out ("out");'.format(self.get_outstream_width())
+        )
+
+    def docompute(self):
+        node = self.onnx_node
+        ram_style = self.get_nodeattr("ram_style")
+        map_to_hls_ram_style = {
+            "auto": "ap_resource_dflt()",
+            "block": "ap_resource_bram()",
+            "distributed": "ap_resource_lutram()",
+            "ultra": "ap_resource_uram()",
+        }
+        hls_ram_style = map_to_hls_ram_style[ram_style]
+        hls_call = node.op_type
+        # check if non optimized ConvolutionInputGenerator is needed
+        k = self.get_nodeattr("ConvKernelDim")
+        stride = self.get_nodeattr("Stride")
+        if k % stride != 0:
+            hls_call += "_kernel_stride"
+
+        if self.get_nodeattr("depthwise") == 1:
+            self.code_gen_dict["$DOCOMPUTE$"] = [
+                """{}_dws<ConvKernelDim1, IFMChannels1, Input_precision1, IFMDim1,
+                    OFMDim1, SIMD1, Stride1> (in0, out, numReps, {});""".format(
+                    hls_call, hls_ram_style
+                )
+            ]
+        else:
+            self.code_gen_dict["$DOCOMPUTE$"] = [
+                """{}<ConvKernelDim1, IFMChannels1, Input_precision1, IFMDim1,
+                    OFMDim1, SIMD1, Stride1> (in0, out, numReps, {});""".format(
+                    hls_call, hls_ram_style
+                )
+            ]
+
+    def dataoutstrm(self):
+        code_gen_dir = self.get_nodeattr("code_gen_dir_cppsim")
+        dtype = self.get_output_datatype()
+        if dtype == DataType.BIPOLAR:
+            # use binary for bipolar storage
+            dtype = DataType.BINARY
+        elem_bits = dtype.bitwidth()
+        packed_bits = self.get_outstream_width()
+        packed_hls_type = "ap_uint<%d>" % packed_bits
+        elem_hls_type = dtype.get_hls_datatype_str()
+        npy_type = "float"
+        npy_out = "%s/output.npy" % code_gen_dir
+        oshape = self.get_folded_output_shape()
+        oshape_cpp_str = str(oshape).replace("(", "{").replace(")", "}")
+
+        self.code_gen_dict["$DATAOUTSTREAM$"] = [
+            'apintstream2npy<%s, %s, %d, %s>(out, %s, "%s");'
+            % (
+                packed_hls_type,
+                elem_hls_type,
+                elem_bits,
+                npy_type,
+                oshape_cpp_str,
+                npy_out,
+            )
+        ]
+
+    def save_as_npy(self):
+        self.code_gen_dict["$SAVEASCNPY$"] = []
+
+    def blackboxfunction(self):
+        self.code_gen_dict["$BLACKBOXFUNCTION$"] = [
+            """void {}(hls::stream<ap_uint<SIMD1*Input_precision1>> &in0,
+                hls::stream<ap_uint<SIMD1*Input_precision1>> &out)""".format(
+                self.onnx_node.name
+            )
+        ]
+
+    def pragmas(self):
+        self.code_gen_dict["$PRAGMAS$"] = ["#pragma HLS INTERFACE axis port=in0"]
+        self.code_gen_dict["$PRAGMAS$"].append("#pragma HLS INTERFACE axis port=out")
+        self.code_gen_dict["$PRAGMAS$"].append(
+            "#pragma HLS INTERFACE ap_ctrl_none port=return"
+        )

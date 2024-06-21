@@ -27,19 +27,19 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import numpy as np
-import qonnx.core.data_layout as DataLayout
 import warnings
-from onnx import TensorProto
 from onnx import helper as oh
-from qonnx.core.datatype import DataType
-from qonnx.core.onnx_exec import execute_node
-from qonnx.custom_op.registry import getCustomOp
-from qonnx.transformation.base import Transformation
-from qonnx.transformation.general import SortGraph
-from qonnx.transformation.infer_data_layouts import InferDataLayouts
-from qonnx.transformation.infer_datatypes import InferDataTypes
-from qonnx.transformation.infer_shapes import InferShapes
-from qonnx.util.basic import get_by_name
+from onnx import TensorProto
+
+from finn.transformation.base import Transformation
+import finn.core.data_layout as DataLayout
+from finn.transformation.infer_shapes import InferShapes
+from finn.transformation.infer_datatypes import InferDataTypes
+from finn.transformation.infer_data_layouts import InferDataLayouts
+from finn.core.datatype import DataType
+from finn.core.onnx_exec import execute_node
+from finn.util.basic import get_by_name
+from finn.custom_op.registry import getCustomOp
 
 
 class MoveAddPastMul(Transformation):
@@ -53,7 +53,11 @@ class MoveAddPastMul(Transformation):
         graph_modified = False
         for n in graph.node:
             node_ind += 1
-            if n.op_type == "Add" and not model.is_fork_node(n) and not model.is_join_node(n):
+            if (
+                n.op_type == "Add"
+                and not model.is_fork_node(n)
+                and not model.is_join_node(n)
+            ):
                 consumer = model.find_consumer(n.output[0])
                 if (
                     consumer is not None
@@ -69,7 +73,9 @@ class MoveAddPastMul(Transformation):
                     A = model.get_initializer(mul_weight_name)
                     B = model.get_initializer(add_weight_name)
                     if (A is None) or (B is None):
-                        warnings.warn("Mul or add does not have constant params, skipping")
+                        warnings.warn(
+                            "Mul or add does not have constant params, skipping"
+                        )
                         continue
                     start_name = n.input[0]
                     middle_name = n.output[0]
@@ -110,7 +116,11 @@ class MoveScalarMulPastMatMul(Transformation):
         graph_modified = False
         for n in graph.node:
             node_ind += 1
-            if n.op_type == "Mul" and not model.is_fork_node(n) and not model.is_join_node(n):
+            if (
+                n.op_type == "Mul"
+                and not model.is_fork_node(n)
+                and not model.is_join_node(n)
+            ):
                 consumer = model.find_consumer(n.output[0])
                 if (
                     consumer is not None
@@ -164,7 +174,11 @@ class MoveScalarAddPastMatMul(Transformation):
         graph_modified = False
         for n in graph.node:
             node_ind += 1
-            if n.op_type == "Add" and not model.is_fork_node(n) and not model.is_join_node(n):
+            if (
+                n.op_type == "Add"
+                and not model.is_fork_node(n)
+                and not model.is_join_node(n)
+            ):
                 consumer = model.find_consumer(n.output[0])
                 if (
                     consumer is not None
@@ -221,7 +235,11 @@ class MoveAddPastConv(Transformation):
         graph_modified = False
         for n in graph.node:
             node_ind += 1
-            if n.op_type == "Add" and not model.is_fork_node(n) and not model.is_join_node(n):
+            if (
+                n.op_type == "Add"
+                and not model.is_fork_node(n)
+                and not model.is_join_node(n)
+            ):
                 consumer = model.find_consumer(n.output[0])
                 if (
                     consumer is not None
@@ -299,60 +317,15 @@ class MoveScalarMulPastConv(Transformation):
         graph_modified = False
         for n in graph.node:
             node_ind += 1
-            if n.op_type == "Mul" and not model.is_fork_node(n) and not model.is_join_node(n):
+            if (
+                n.op_type == "Mul"
+                and not model.is_fork_node(n)
+                and not model.is_join_node(n)
+            ):
                 consumer = model.find_consumer(n.output[0])
                 if (
                     consumer is not None
                     and consumer.op_type == "Conv"
-                    and not model.is_join_node(consumer)
-                ):
-                    mul_weight_name = n.input[1]
-                    A = model.get_initializer(mul_weight_name)
-                    if A is None:
-                        warnings.warn("Mul param is not constant, skipping")
-                        continue
-                    conv_node = consumer
-                    mul_node = n
-                    start_name = mul_node.input[0]
-                    conv_in_name = conv_node.input[0]
-                    conv_in_shape = model.get_tensor_shape(conv_in_name)
-                    conv_out_name = conv_node.output[0]
-                    conv_out_shape = model.get_tensor_shape(conv_out_name)
-                    if all(x == 1 for x in A.shape):
-                        # if the mul is scalar, we can simply swap the order of ops
-                        # rewire mul input to be conv input
-                        conv_node.input[0] = start_name
-                        model.set_tensor_shape(start_name, conv_in_shape)
-                        # use old conv input tensor as conv output
-                        conv_node.output[0] = conv_in_name
-                        model.set_tensor_shape(conv_in_name, conv_out_shape)
-                        # use new conv output as new mul node input
-                        mul_node.input[0] = conv_in_name
-                        # use old conv output as new mul node output
-                        mul_node.output[0] = conv_out_name
-                        # move add node past conv node
-                        graph.node.remove(mul_node)
-                        graph.node.insert(node_ind, mul_node)
-                        graph_modified = True
-        model = model.transform(InferShapes())
-        return (model, graph_modified)
-
-
-class MoveScalarMulPastConvTranspose(Transformation):
-    """Move scalar mul operations past ConvTranspose operations. We want to have muls
-    next to each other such that they can be collapsed into a single mul."""
-
-    def apply(self, model):
-        graph = model.graph
-        node_ind = 0
-        graph_modified = False
-        for n in graph.node:
-            node_ind += 1
-            if n.op_type == "Mul" and not model.is_fork_node(n) and not model.is_join_node(n):
-                consumer = model.find_consumer(n.output[0])
-                if (
-                    consumer is not None
-                    and consumer.op_type == "ConvTranspose"
                     and not model.is_join_node(consumer)
                 ):
                     mul_weight_name = n.input[1]
@@ -397,7 +370,11 @@ class MoveMulPastDWConv(Transformation):
         graph_modified = False
         for n in graph.node:
             node_ind += 1
-            if n.op_type == "Mul" and not model.is_fork_node(n) and not model.is_join_node(n):
+            if (
+                n.op_type == "Mul"
+                and not model.is_fork_node(n)
+                and not model.is_join_node(n)
+            ):
                 consumer = model.find_consumer(n.output[0])
                 if (
                     consumer is not None
@@ -430,85 +407,17 @@ class MoveMulPastDWConv(Transformation):
                         # rewire mul input to be conv input
                         conv_node.input[0] = start_name
                         model.set_tensor_shape(start_name, conv_in_shape)
-                        model.set_tensor_datatype(start_name, DataType["FLOAT32"])
+                        model.set_tensor_datatype(start_name, DataType.FLOAT32)
                         # use old conv input tensor as conv output
                         conv_node.output[0] = conv_in_name
                         model.set_tensor_shape(conv_in_name, conv_out_shape)
-                        model.set_tensor_datatype(conv_in_name, DataType["FLOAT32"])
+                        model.set_tensor_datatype(conv_in_name, DataType.FLOAT32)
                         # use new conv output as new mul node input
                         mul_node.input[0] = conv_in_name
                         # use old conv output as new mul node output
                         mul_node.output[0] = conv_out_name
-                        model.set_tensor_datatype(conv_out_name, DataType["FLOAT32"])
+                        model.set_tensor_datatype(conv_out_name, DataType.FLOAT32)
                         # move mul node past conv node
-                        graph.node.remove(mul_node)
-                        graph.node.insert(node_ind, mul_node)
-                        graph_modified = True
-        model = model.transform(InferShapes())
-        return (model, graph_modified)
-
-
-class MoveMulPastMaxPool(Transformation):
-    """Move non-negative scalar or channelwise mul operations past max pool operations.
-    We want to have muls next to each other such that they can be collapsed into a
-    single mul."""
-
-    def apply(self, model):
-        graph = model.graph
-        node_ind = 0
-        graph_modified = False
-        for n in graph.node:
-            node_ind += 1
-            if n.op_type == "Mul" and not model.is_fork_node(n) and not model.is_join_node(n):
-                consumer = model.find_consumer(n.output[0])
-                if (
-                    consumer is not None
-                    and consumer.op_type == "MaxPool"
-                    and not model.is_join_node(consumer)
-                ):
-                    mul_weight_name = n.input[1]
-                    A = model.get_initializer(mul_weight_name)
-                    if A is None:
-                        warnings.warn(
-                            """Mul weight tensor is not set. If it is a constant,
-                                please use set_initializer to set the tensor."""
-                        )
-                        continue
-                    maxpool_node = consumer
-                    mul_node = n
-                    start_name = mul_node.input[0]
-                    maxpool_in_name = maxpool_node.input[0]
-                    maxpool_in_shape = model.get_tensor_shape(maxpool_in_name)
-                    ifm_ch = maxpool_in_shape[1]
-                    maxpool_out_name = maxpool_node.output[0]
-                    maxpool_out_shape = model.get_tensor_shape(maxpool_out_name)
-
-                    # do not support non-2D MaxPool
-                    kernel_shape = list(get_by_name(maxpool_node.attribute, "kernel_shape").ints)
-                    if len(kernel_shape) != 2:
-                        continue
-
-                    # do not move negative multiplication factor(s)
-                    if (A < 0).any():
-                        continue
-
-                    if all(x == 1 for x in A.shape) or A.shape == (1, ifm_ch, 1, 1):
-                        # if the mul is scalar or channelwise,
-                        # we can simply swap the order of ops
-                        # rewire mul input to be maxpool input
-                        maxpool_node.input[0] = start_name
-                        model.set_tensor_shape(start_name, maxpool_in_shape)
-                        model.set_tensor_datatype(start_name, DataType["FLOAT32"])
-                        # use old maxpool input tensor as maxpool output
-                        maxpool_node.output[0] = maxpool_in_name
-                        model.set_tensor_shape(maxpool_in_name, maxpool_out_shape)
-                        model.set_tensor_datatype(maxpool_in_name, DataType["FLOAT32"])
-                        # use new maxpool output as new mul node input
-                        mul_node.input[0] = maxpool_in_name
-                        # use old maxpool output as new mul node output
-                        mul_node.output[0] = maxpool_out_name
-                        model.set_tensor_datatype(maxpool_out_name, DataType["FLOAT32"])
-                        # move mul node past maxpool node
                         graph.node.remove(mul_node)
                         graph.node.insert(node_ind, mul_node)
                         graph_modified = True
@@ -518,10 +427,10 @@ class MoveMulPastMaxPool(Transformation):
 
 class MoveLinearPastEltwiseAdd(Transformation):
     """Move linear operations (mul, add) past elementwise add operations where possible.
-    Specifically,matches and transforms the following patterns:
-    (x*C) + (y*C) -> (x + y) * C
-    (x+A) + (y+B) -> (x + y) + (A + B)
-    where x and y are dynamic inputs, A, B, C are constant tensors (in general).
+       Specifically,matches and transforms the following patterns:
+       (x*C) + (y*C) -> (x + y) * C
+       (x+A) + (y+B) -> (x + y) + (A + B)
+       where x and y are dynamic inputs, A, B, C are constant tensors (in general).
     """
 
     def move_node(self, graph, n, prod0, prod1, node_ind):
@@ -570,8 +479,6 @@ class MoveLinearPastEltwiseAdd(Transformation):
                 # Other transform should handle that
                 if prod0 is None or prod1 is None or (prod0 == prod1):
                     continue
-                if len(prod0.input) < 2 or len(prod1.input) < 2:
-                    continue
                 init0 = model.get_initializer(prod0.input[1])
                 init1 = model.get_initializer(prod1.input[1])
                 # if either initializer is None, skip
@@ -597,12 +504,12 @@ class MoveLinearPastEltwiseAdd(Transformation):
 
 class MoveScalarLinearPastInvariants(Transformation):
     """Move scalar linear operations (mul, add) past functions which are invariant
-    to them. Specifically, matches and transforms the following patterns:
-    f(x*C) -> f(x) * C
-    f(x+C) -> f(x) + C
-    where x is a dynamic input, C is a constant tensor.
-    Known f which obey this property are: Reshape, Flatten, Transpose,
-    GlobalAveragePool
+       to them. Specifically, matches and transforms the following patterns:
+       f(x*C) -> f(x) * C
+       f(x+C) -> f(x) + C
+       where x is a dynamic input, C is a constant tensor.
+       Known f which obey this property are: Reshape, Flatten, Transpose,
+       GlobalAveragePool
     """
 
     def apply(self, model):
@@ -612,17 +519,11 @@ class MoveScalarLinearPastInvariants(Transformation):
         nodes = [n for n in graph.node]
         for n in nodes:
             node_ind += 1
-            is_nearest_neighbor_resample = False
-            if n.op_type == "Upsample" or n.op_type == "Resize":
-                # Extract mode and scales and input shape
-                mode = get_by_name(n.attribute, "mode").s.decode("ascii")
-                is_nearest_neighbor_resample = mode == "nearest"
             if (
                 n.op_type == "GlobalAveragePool"
                 or n.op_type == "Reshape"
                 or n.op_type == "Transpose"
                 or n.op_type == "Flatten"
-                or is_nearest_neighbor_resample
             ):
                 in0 = n.input[0]
                 if in0 is None:
@@ -641,10 +542,6 @@ class MoveScalarLinearPastInvariants(Transformation):
                     # if initializer is not scalar, skip
                     if np.prod(init0.shape) != 1:
                         continue
-                    # Flatten input if required
-                    if len(init0.shape) > 0:
-                        init0 = init0.flatten()[0]
-                        model.set_initializer(prod0.input[1], init0)
                     # move prod0 from input to output,
                     old_prod0_in = prod0.input[0]
                     old_prod0_out = prod0.output[0]
@@ -660,7 +557,7 @@ class MoveScalarLinearPastInvariants(Transformation):
                     model.set_tensor_shape(n.output[0], out_shape)
                     model.set_tensor_shape(prod0.output[0], out_shape)
                     model.set_tensor_datatype(prod0.output[0], scalar_op_odt)
-                    model.set_tensor_datatype(n.output[0], DataType["FLOAT32"])
+                    model.set_tensor_datatype(n.output[0], DataType.FLOAT32)
                     graph.node.remove(prod0)
                     graph.node.insert(node_ind - 1, prod0)
                     graph_modified = True
@@ -673,8 +570,7 @@ class MoveScalarLinearPastInvariants(Transformation):
 
 
 class MakeMaxPoolNHWC(Transformation):
-    """Convert (MaxPool, NHWCTranspose) into (NHWCTranspose, MaxPoolNHWC)
-    and (NCHWTranspose, MaxPool) into (MaxPoolNHWC, NCHWTranspose)."""
+    """Convert (MaxPool, NHWCTranpose) into (MaxPoolNHWC)."""
 
     def apply(self, model):
         graph = model.graph
@@ -684,17 +580,11 @@ class MakeMaxPoolNHWC(Transformation):
             node_ind += 1
             if n.op_type == "MaxPool":
                 consumer = model.find_consumer(n.output[0])
-                producer = model.find_producer(n.input[0])
                 if consumer is not None and consumer.op_type == "Transpose":
                     perms = list(get_by_name(consumer.attribute, "perm").ints)
                     if perms == [0, 2, 3, 1]:
-                        ceil_mode = get_by_name(n.attribute, "ceil_mode")
-                        if ceil_mode is not None:
-                            ceil_mode = ceil_mode.i
-                        else:
-                            ceil_mode = 0  # default to ceil_mode=0 (equivalent to np.floor)
                         n.op_type = "MaxPoolNHWC"
-                        n.domain = "qonnx.custom_op.general"
+                        n.domain = "finn.custom_op.general"
                         start_name = n.input[0]
                         mid_name = consumer.input[0]
                         end_name = consumer.output[0]
@@ -706,117 +596,20 @@ class MakeMaxPoolNHWC(Transformation):
                         n.output[0] = end_name
                         model.set_tensor_shape(mid_name, (b, hi, wi, c))
                         model.set_tensor_shape(end_name, (b, ho, wo, c))
-                        getCustomOp(n).set_nodeattr("ceil_mode", ceil_mode)
                         graph.node.remove(consumer)
                         graph.node.insert(node_ind - 1, consumer)
-                        graph_modified = True
-                elif producer is not None and producer.op_type == "Transpose":
-                    perms = list(get_by_name(producer.attribute, "perm").ints)
-                    if perms == [0, 3, 1, 2]:
-                        ceil_mode = get_by_name(n.attribute, "ceil_mode")
-                        if ceil_mode is not None:
-                            ceil_mode = ceil_mode.i
-                        else:
-                            ceil_mode = 0  # default to ceil_mode=0 (equivalent to np.floor)
-                        n.op_type = "MaxPoolNHWC"
-                        n.domain = "qonnx.custom_op.general"
-                        start_name = producer.input[0]
-                        mid_name = n.input[0]
-                        end_name = n.output[0]
-                        (b, hi, wi, c) = model.get_tensor_shape(start_name)
-                        (b, c, ho, wo) = model.get_tensor_shape(end_name)
-                        producer.input[0] = mid_name
-                        producer.output[0] = end_name
-                        n.input[0] = start_name
-                        n.output[0] = mid_name
-                        model.set_tensor_shape(mid_name, (b, ho, wo, c))
-                        model.set_tensor_shape(end_name, (b, c, ho, wo))
-                        getCustomOp(n).set_nodeattr("ceil_mode", ceil_mode)
-                        graph.node.remove(producer)
-                        graph.node.insert(node_ind, producer)
                         graph_modified = True
         return (model, graph_modified)
 
 
-class MakeScaleResizeNHWC(Transformation):
-    """
-    Converts the inputs and outputs for all scales Resize and Upsample nodes
-    from NCHW to NHWC.
-    """
-
-    def apply(self, model):
-        graph = model.graph
-        node_ind = 0
-        for n in graph.node:
-            node_ind += 1
-            if n.op_type == "Upsample" or n.op_type == "Resize":
-                if model.get_tensor_layout(n.input[0]) != DataLayout.NCHW:
-                    warnings.warn(
-                        "%s: Input not NCHW. Can't operate transformation on node." % n.name
-                    )
-                    continue
-                consumer = model.find_consumer(n.output[0])
-                producer = model.find_producer(n.input[0])
-                if n.op_type == "Upsample":
-                    scales_ind = 1
-                else:
-                    scales_ind = 2
-                if producer is not None and producer.op_type == "Transpose":
-                    perms = list(get_by_name(producer.attribute, "perm").ints)
-                    if perms == [0, 3, 1, 2]:
-                        old_value = model.get_initializer(n.input[scales_ind])
-                        new_value = np.array(
-                            [old_value[idx] for idx in (0, 2, 3, 1)],
-                            dtype=np.dtype("float32"),
-                        )
-                        model.set_initializer(n.input[scales_ind], new_value)
-                        start_name = producer.input[0]
-                        mid_name = n.input[0]
-                        end_name = n.output[0]
-                        (b, hi, wi, c) = model.get_tensor_shape(start_name)
-                        (b, c, ho, wo) = model.get_tensor_shape(end_name)
-                        producer.input[0] = mid_name
-                        producer.output[0] = end_name
-                        n.input[0] = start_name
-                        n.output[0] = mid_name
-                        model.set_tensor_shape(mid_name, (b, ho, wo, c))
-                        model.set_tensor_shape(end_name, (b, c, ho, wo))
-                        graph.node.remove(producer)
-                        graph.node.insert(node_ind, producer)
-                elif consumer is not None and consumer.op_type == "Transpose":
-                    perms = list(get_by_name(consumer.attribute, "perm").ints)
-                    if perms == [0, 2, 3, 1]:
-                        old_value = model.get_initializer(n.input[scales_ind])
-                        new_value = np.array(
-                            [old_value[idx] for idx in (0, 2, 3, 1)],
-                            dtype=np.dtype("float32"),
-                        )
-                        model.set_initializer(n.input[scales_ind], new_value)
-                        start_name = n.input[0]
-                        mid_name = consumer.input[0]
-                        end_name = consumer.output[0]
-                        (b, c, hi, wi) = model.get_tensor_shape(start_name)
-                        (b, c, ho, wo) = model.get_tensor_shape(mid_name)
-                        consumer.input[0] = start_name
-                        consumer.output[0] = mid_name
-                        n.input[0] = mid_name
-                        n.output[0] = end_name
-                        model.set_tensor_shape(mid_name, (b, hi, wi, c))
-                        model.set_tensor_shape(end_name, (b, ho, wo, c))
-                        graph.node.remove(consumer)
-                        graph.node.insert(node_ind - 1, consumer)
-        return (model, False)
-
-
 class MoveOpPastFork(Transformation):
     """Move node operations past graph forks. Used when a node before a fork
-    can be merged with nodes in the branches
+     can be merged with nodes in the branches
     """
 
-    def __init__(self, op_name_list, get_attrs_fxn=lambda x: {}):
+    def __init__(self, op_name_list):
         super().__init__()
         self.ops_to_move = op_name_list
-        self.get_attrs_fxn = get_attrs_fxn
 
     def apply(self, model):
         graph = model.graph
@@ -830,17 +623,16 @@ class MoveOpPastFork(Transformation):
                 and model.is_fork_node(n)
                 and not model.is_join_node(n)
             ):
+
                 # Restrict this transform to operations with constant parameters
                 # Assuming parameters is in input 1
-                if len(n.input) > 1:
-                    op_init_param = model.get_initializer(n.input[1])
-                else:
-                    op_init_param = None
+                op_init_param = model.get_initializer(n.input[1])
+                if op_init_param is None:
+                    continue
 
                 # Check case when branches are empty and go
                 # to the same node
                 consumers = model.find_consumers(n.output[0])
-                assert len(consumers) > 1, "Must have >1 consumer"
                 unique_consumer = True
                 for consum_node in consumers[1:]:
                     if consumers[0] != consum_node:
@@ -852,20 +644,16 @@ class MoveOpPastFork(Transformation):
 
                 for consumer_node in consumers[1:]:
                     # create new node
+                    new_param_name = model.make_new_valueinfo_name()
                     new_output_tensor_name = model.make_new_valueinfo_name()
-                    if op_init_param is None:
-                        new_inp_list = [n.input[0]]
-                    else:
-                        new_param_name = model.make_new_valueinfo_name()
-                        new_inp_list = [n.input[0], new_param_name]
-                        model.set_initializer(new_param_name, op_init_param)
-                    attrs = self.get_attrs_fxn(n)
-                    # TODO use copy of original node instead to get attrs?
                     new_node = oh.make_node(
-                        n.op_type, new_inp_list, [new_output_tensor_name], **attrs
+                        n.op_type,
+                        [n.input[0], new_param_name],
+                        [new_output_tensor_name],
                     )
                     graph.node.insert(node_ind, new_node)
                     node_ind += 1
+                    model.set_initializer(new_param_name, op_init_param)
 
                     # change consumer input tensor
                     graph.node.remove(consumer_node)
@@ -874,7 +662,9 @@ class MoveOpPastFork(Transformation):
                             consumer_node.input[idx] = new_output_tensor_name
                             break
                     else:
-                        raise Exception("Consumer should have the current node output as input")
+                        raise Exception(
+                            "Consumer should have the current node output as input"
+                        )
 
                     graph.node.insert(node_ind, consumer_node)
 
@@ -899,11 +689,6 @@ class MoveLinearPastFork(MoveOpPastFork):
         super().__init__(["Add", "Mul"])
 
 
-class MoveTransposePastFork(MoveOpPastFork):
-    def __init__(self):
-        super().__init__(["Transpose"], lambda x: {"perm": get_by_name(x.attribute, "perm").ints})
-
-
 class MoveMaxPoolPastMultiThreshold(Transformation):
     """Move MaxPool nodes past MultiThreshold nodes on linear segments of the graph."""
 
@@ -925,7 +710,9 @@ class MoveMaxPoolPastMultiThreshold(Transformation):
                     mt_out = consumer.output[0]
                     mt_odt = model.get_tensor_datatype(mt_out)
                     if mt_odt.signed() and has_padding:
-                        warnings.warn("Skipping padded MaxPool + signed-output MultiThreshold")
+                        warnings.warn(
+                            "Skipping padded MaxPool + signed-output MultiThreshold"
+                        )
                         continue
                     # check for non-decreasing thresholds and nonnegative
                     # scale factor in MultiThreshold
@@ -1036,7 +823,11 @@ class MoveFlattenPastAffine(Transformation):
         node_ind = 0
         for n in graph.node:
             node_ind += 1
-            if n.op_type == "Flatten" and not model.is_fork_node(n) and not model.is_join_node(n):
+            if (
+                n.op_type == "Flatten"
+                and not model.is_fork_node(n)
+                and not model.is_join_node(n)
+            ):
                 consumer = model.find_consumer(n.output[0])
                 if (
                     consumer is not None
@@ -1122,7 +913,11 @@ class MoveTransposePastScalarMul(Transformation):
         graph_modified = False
         for n in graph.node:
             node_ind += 1
-            if n.op_type == "Transpose" and not model.is_fork_node(n) and not model.is_join_node(n):
+            if (
+                n.op_type == "Transpose"
+                and not model.is_fork_node(n)
+                and not model.is_join_node(n)
+            ):
                 consumer = model.find_consumer(n.output[0])
                 if (
                     consumer is not None
@@ -1170,77 +965,3 @@ class MoveTransposePastScalarMul(Transformation):
             model = model.transform(InferDataLayouts())
             model = model.transform(InferShapes())
         return (model, graph_modified)
-
-
-class MoveIdenticalOpPastJoinOp(Transformation):
-    """
-    Move identical operations on different branches past the common join node.
-    This transformation assumes that the identical operations only change the
-    data layout. For linear operations, see the transformation MoveLinearPastEltwiseAdd.
-    Specifically, this transformation matches and transforms the following patterns:
-    f(x) + f(y) -> f(x + y)
-    where f(.) is currently only supporting 'Transpose', and an 'Add' node is
-    the join node.
-    """
-
-    def __init__(self, identical_op_list, join_node_list):
-        super().__init__()
-        self.ops_to_move = identical_op_list
-        self.join_node_op = join_node_list
-
-    def move_node(self, model, n, prod0, prod1):
-        # Found! move one of the identical_ops to output, remove the other one
-        identical_op0_in0 = prod0.input[0]
-        identical_op1_in0 = prod1.input[0]
-        add_in0 = n.input[0]
-        add_out = n.output[0]
-
-        # Rewire
-        n.input[0] = identical_op0_in0
-        n.input[1] = identical_op1_in0
-
-        # Output tensor of the join node must have the same shape as
-        # its input tensor (original shape is preserved)
-        new_shape = model.get_tensor_shape(identical_op0_in0)
-
-        # Set new tensor shape
-        model.set_tensor_shape(tensor_name=add_in0, tensor_shape=new_shape)
-
-        n.output[0] = add_in0
-        prod0.input[0] = add_in0
-        prod0.output[0] = add_out
-
-        model.graph.node.remove(prod1)
-
-    def apply(self, model):
-        graph = model.graph
-        graph_modified = False
-        for n in graph.node:
-            if n.op_type in self.join_node_op and model.is_join_node(n):
-                in0 = n.input[0]
-                in1 = n.input[1]
-                if in0 is None or in1 is None:
-                    continue
-
-                prod0 = model.find_producer(in0)
-                prod1 = model.find_producer(in1)
-                # Checks if the join node is preceded by
-                # two different, but identical operations
-                if prod0 == prod1:
-                    continue
-
-                identical_op = prod0.op_type == prod1.op_type
-
-                if identical_op and prod0.op_type in self.ops_to_move:
-                    self.move_node(model, n, prod0, prod1)
-                    graph_modified = True
-
-        if graph_modified:
-            model = model.transform(SortGraph(), make_deepcopy=False, cleanup=False)
-
-        return (model, graph_modified)
-
-
-class MoveTransposePastJoinAdd(MoveIdenticalOpPastJoinOp):
-    def __init__(self):
-        super().__init__(["Transpose"], ["Add"])

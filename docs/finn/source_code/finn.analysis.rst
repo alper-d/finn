@@ -15,34 +15,19 @@ Submodules
 Analysis Passes
 ===============
 
-qonnx.analysis.base
+finn.analysis.base
 -----------------------------
 
-.. automodule:: qonnx.analysis.base
+.. automodule:: finn.analysis.base
    :members:
    :undoc-members:
    :show-inheritance:
 
-qonnx.analysis.inference\_cost
--------------------------------
 
-.. automodule:: qonnx.analysis.inference_cost
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-qonnx.analysis.tensor\_stats
+finn.analysis.topology
 -----------------------------
 
-.. automodule:: qonnx.analysis.tensor_stats
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-qonnx.analysis.topology
------------------------------
-
-.. automodule:: qonnx.analysis.topology
+.. automodule:: finn.analysis.topology
    :members:
    :undoc-members:
    :show-inheritance:

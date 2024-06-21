@@ -60,9 +60,8 @@ pynq_driver_template = """
 import argparse
 import numpy as np
 import os
-from qonnx.core.datatype import DataType
+from finn.core.datatype import DataType
 from driver_base import FINNExampleOverlay
-from pynq.pl_server.device import Device
 
 # dictionary describing the I/O of the FINN-generated accelerator
 io_shape_dict = {
@@ -78,12 +77,7 @@ io_shape_dict = {
     "ishape_folded" : $INPUT_SHAPE_FOLDED$,
     "oshape_folded" : $OUTPUT_SHAPE_FOLDED$,
     "ishape_packed" : $INPUT_SHAPE_PACKED$,
-    "oshape_packed" : $OUTPUT_SHAPE_PACKED$,
-    "input_dma_name" : $INPUT_DMA_NAME$,
-    "output_dma_name" : $OUTPUT_DMA_NAME$,
-    "number_of_external_weights": $EXT_WEIGHT_NUM$,
-    "num_inputs" : $NUM_INPUTS$,
-    "num_outputs" : $NUM_OUTPUTS$,
+    "oshape_packed" : $OUTPUT_SHAPE_PACKED$
 }
 
 if __name__ == "__main__":
@@ -91,10 +85,9 @@ if __name__ == "__main__":
     parser.add_argument('--exec_mode', help='Please select functional verification ("execute") or throughput test ("throughput_test")', default="execute")
     parser.add_argument('--platform', help='Target platform: zynq-iodma alveo', default="$PLATFORM$")
     parser.add_argument('--batchsize', help='number of samples for inference', type=int, default=1)
-    parser.add_argument('--device', help='FPGA device to be used', type=int, default=0)
     parser.add_argument('--bitfile', help='name of bitfile (i.e. "resizer.bit")', default="resizer.bit")
-    parser.add_argument('--inputfile', help='name(s) of input npy file(s) (i.e. "input.npy")', nargs="*", type=str, default=["input.npy"])
-    parser.add_argument('--outputfile', help='name(s) of output npy file(s) (i.e. "output.npy")', nargs="*", type=str, default=["output.npy"])
+    parser.add_argument('--inputfile', help='name of input npy file (i.e. "input.npy")', default="input.npy")
+    parser.add_argument('--outputfile', help='name of output npy file (i.e. "output.npy")', default="output.npy")
     parser.add_argument('--runtime_weight_dir', help='path to folder containing runtime-writable .dat weights', default="runtime_weights/")
     # parse arguments
     args = parser.parse_args()
@@ -105,28 +98,27 @@ if __name__ == "__main__":
     inputfile = args.inputfile
     outputfile = args.outputfile
     runtime_weight_dir = args.runtime_weight_dir
-    devID = args.device
-    device = Device.devices[devID]
 
     # instantiate FINN accelerator driver and pass batchsize and bitfile
     accel = FINNExampleOverlay(
         bitfile_name = bitfile, platform = platform,
         io_shape_dict = io_shape_dict, batch_size = batch_size,
-        runtime_weight_dir = runtime_weight_dir, device=device
+        runtime_weight_dir = runtime_weight_dir
     )
 
     # for the remote execution the data from the input npy file has to be loaded,
     # packed and copied to the PYNQ buffer
     if exec_mode == "execute":
-        # load desired input .npy file(s)
-        ibuf_normal = []
-        for ifn in inputfile:
-            ibuf_normal.append(np.load(ifn))
+        # remove old output file to prevent reusing old output
+        # in case execution fails
+        try:
+            os.remove(outputfile)
+        except FileNotFoundError:
+            pass
+        # load desired input .npy file
+        ibuf_normal = np.load(inputfile)
         obuf_normal = accel.execute(ibuf_normal)
-        if not isinstance(obuf_normal, list):
-            obuf_normal = [obuf_normal]
-        for o, obuf in enumerate(obuf_normal):
-            np.save(outputfile[o], obuf)
+        np.save(outputfile, obuf_normal)
     elif exec_mode == "throughput_test":
         # remove old metrics file
         try:
@@ -139,5 +131,5 @@ if __name__ == "__main__":
         file.close()
         print("Results written to nw_metrics.txt")
     else:
-        raise Exception("Exec mode has to be set to execute or throughput_test")
+        raise Exception("Exec mode has to be set to remote_pynq or throughput_test")
 """

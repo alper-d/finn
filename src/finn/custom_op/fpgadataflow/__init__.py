@@ -1,5 +1,4 @@
-# Copyright (C) 2020-2022, Xilinx, Inc.
-# Copyright (C) 2023-2024, Advanced Micro Devices, Inc.
+# Copyright (c) 2020, Xilinx
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -27,57 +26,54 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-from finn.custom_op.fpgadataflow.addstreams import AddStreams
-from finn.custom_op.fpgadataflow.channelwise_op import ChannelwiseOp
-from finn.custom_op.fpgadataflow.concat import StreamingConcat
 from finn.custom_op.fpgadataflow.convolutioninputgenerator import (
     ConvolutionInputGenerator,
 )
+from finn.custom_op.fpgadataflow.convolutioninputgeneratorpruned import (
+    ConvolutionInputGeneratorSIMDPruned,
+    ConvolutionInputGeneratorPruned,
+)
 from finn.custom_op.fpgadataflow.downsampler import DownSampler
-from finn.custom_op.fpgadataflow.duplicatestreams import DuplicateStreams
-from finn.custom_op.fpgadataflow.fmpadding import FMPadding
-from finn.custom_op.fpgadataflow.fmpadding_pixel import FMPadding_Pixel
-from finn.custom_op.fpgadataflow.globalaccpool import GlobalAccPool
-from finn.custom_op.fpgadataflow.labelselect import LabelSelect
-from finn.custom_op.fpgadataflow.lookup import Lookup
-from finn.custom_op.fpgadataflow.matrixvectoractivation import MVAU
-from finn.custom_op.fpgadataflow.pool import Pool
-from finn.custom_op.fpgadataflow.streamingdataflowpartition import (
-    StreamingDataflowPartition,
-)
-from finn.custom_op.fpgadataflow.streamingdatawidthconverter import (
-    StreamingDataWidthConverter,
-)
-from finn.custom_op.fpgadataflow.streamingeltwise import StreamingEltwise
+from finn.custom_op.fpgadataflow.streamingfclayer_batch import StreamingFCLayer_Batch
+from finn.custom_op.fpgadataflow.streamingmaxpool_batch import StreamingMaxPool_Batch
 from finn.custom_op.fpgadataflow.streamingfifo import StreamingFIFO
-from finn.custom_op.fpgadataflow.streamingmaxpool import StreamingMaxPool
-from finn.custom_op.fpgadataflow.thresholding import Thresholding
-from finn.custom_op.fpgadataflow.upsampler import UpsampleNearestNeighbour
-from finn.custom_op.fpgadataflow.vectorvectoractivation import VVAU
+from finn.custom_op.fpgadataflow.tlastmarker import TLastMarker
+from finn.custom_op.fpgadataflow.streamingdatawidthconverter_batch import (
+    StreamingDataWidthConverter_Batch,
+)
+from finn.custom_op.fpgadataflow.globalaccpool_batch import GlobalAccPool_Batch
+from finn.custom_op.fpgadataflow.pool_batch import Pool_Batch
+from finn.custom_op.fpgadataflow.fmpadding_batch import FMPadding_Batch
+from finn.custom_op.fpgadataflow.thresholding_batch import Thresholding_Batch
+from finn.custom_op.fpgadataflow.addstreams_batch import AddStreams_Batch
+from finn.custom_op.fpgadataflow.labelselect_batch import LabelSelect_Batch
+from finn.custom_op.fpgadataflow.duplicatestreams_batch import DuplicateStreams_Batch
+from finn.custom_op.fpgadataflow.vector_vector_activate_batch import (
+    Vector_Vector_Activate_Batch,
+)
+from finn.custom_op.fpgadataflow.channelwise_op_batch import ChannelwiseOp_Batch
+from finn.custom_op.fpgadataflow.iodma import IODMA
 
 custom_op = dict()
 
 # make sure new HLSCustomOp subclasses are imported here so that they get
 # registered and plug in correctly into the infrastructure
-custom_op["MVAU"] = MVAU
-custom_op["StreamingFIFO"] = StreamingFIFO
-custom_op["Thresholding"] = Thresholding
-custom_op["VVAU"] = VVAU
-custom_op["StreamingDataflowPartition"] = StreamingDataflowPartition
-
-custom_op["AddStreams"] = AddStreams
-custom_op["ChannelwiseOp"] = ChannelwiseOp
-custom_op["ConvolutionInputGenerator"] = ConvolutionInputGenerator
 custom_op["DownSampler"] = DownSampler
-custom_op["DuplicateStreams"] = DuplicateStreams
-custom_op["FMPadding"] = FMPadding
-custom_op["FMPadding_Pixel"] = FMPadding_Pixel
-custom_op["GlobalAccPool"] = GlobalAccPool
-custom_op["LabelSelect"] = LabelSelect
-custom_op["Lookup"] = Lookup
-custom_op["Pool"] = Pool
-custom_op["StreamingConcat"] = StreamingConcat
-custom_op["StreamingDataWidthConverter"] = StreamingDataWidthConverter
-custom_op["StreamingEltwise"] = StreamingEltwise
-custom_op["StreamingMaxPool"] = StreamingMaxPool
-custom_op["UpsampleNearestNeighbour"] = UpsampleNearestNeighbour
+custom_op["StreamingMaxPool_Batch"] = StreamingMaxPool_Batch
+custom_op["StreamingFCLayer_Batch"] = StreamingFCLayer_Batch
+custom_op["ConvolutionInputGenerator"] = ConvolutionInputGenerator
+custom_op["ConvolutionInputGeneratorSIMDPruned"] = ConvolutionInputGeneratorSIMDPruned
+custom_op["ConvolutionInputGeneratorPruned"] = ConvolutionInputGeneratorPruned
+custom_op["TLastMarker"] = TLastMarker
+custom_op["StreamingDataWidthConverter_Batch"] = StreamingDataWidthConverter_Batch
+custom_op["StreamingFIFO"] = StreamingFIFO
+custom_op["GlobalAccPool_Batch"] = GlobalAccPool_Batch
+custom_op["Pool_Batch"] = Pool_Batch
+custom_op["FMPadding_Batch"] = FMPadding_Batch
+custom_op["Thresholding_Batch"] = Thresholding_Batch
+custom_op["AddStreams_Batch"] = AddStreams_Batch
+custom_op["LabelSelect_Batch"] = LabelSelect_Batch
+custom_op["DuplicateStreams_Batch"] = DuplicateStreams_Batch
+custom_op["Vector_Vector_Activate_Batch"] = Vector_Vector_Activate_Batch
+custom_op["ChannelwiseOp_Batch"] = ChannelwiseOp_Batch
+custom_op["IODMA"] = IODMA

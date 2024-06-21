@@ -26,15 +26,14 @@
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-import json
-import warnings
-from qonnx.custom_op.registry import getCustomOp
-from qonnx.transformation.base import Transformation
-from qonnx.transformation.general import ApplyConfig
-from qonnx.util.basic import get_by_name
-
+from finn.custom_op.registry import getCustomOp
+from finn.transformation.base import Transformation
+from finn.util.basic import get_by_name
 from finn.analysis.fpgadataflow.floorplan_params import floorplan_params
 from finn.util.basic import make_build_dir
+from finn.transformation.general import ApplyConfig
+import warnings
+import json
 
 
 class Floorplan(Transformation):
@@ -56,22 +55,18 @@ class Floorplan(Transformation):
         self.user_floorplan = floorplan
 
     def apply(self, model):
+
         # read in a user-specified floorplan or generate a default one
         if self.user_floorplan is None:
-            self.user_floorplan = model.analysis(floorplan_params)
+            floorplan = model.analysis(floorplan_params)
             json_dir = make_build_dir(prefix="vitis_floorplan_")
             json_file = json_dir + "/floorplan.json"
             model.set_metadata_prop("floorplan_json", json_file)
             with open(json_file, "w") as f:
-                json.dump(self.user_floorplan, f, indent=4)
+                json.dump(floorplan, f, indent=4)
         else:
             model.set_metadata_prop("floorplan_json", self.user_floorplan)
             model = model.transform(ApplyConfig(self.user_floorplan))
-
-        try:
-            default_slr = self.user_floorplan["Defaults"]["slr"][0]
-        except Exception:
-            default_slr = -1
 
         # perform DWC and FIFO specific adjustments
         unassigned_nodes = 0
@@ -80,8 +75,7 @@ class Floorplan(Transformation):
             node_slr = node_inst.get_nodeattr("slr")
             if node_slr == -1:
                 unassigned_nodes += 1
-                node_inst.set_nodeattr("slr", default_slr)
-            if node.op_type.startswith("StreamingDataWidthConverter"):
+            if node.op_type == "StreamingDataWidthConverter_Batch":
                 # if we have SLR assignment already. use that
                 if node_slr != -1:
                     continue
@@ -93,9 +87,10 @@ class Floorplan(Transformation):
                     narrow_neighbour = model.find_consumer(node.output[0])
                 else:
                     narrow_neighbour = model.find_producer(node.input[0])
+
                 node_slr = getCustomOp(narrow_neighbour).get_nodeattr("slr")
                 node_inst.set_nodeattr("slr", node_slr)
-            if node.op_type.startswith("StreamingFIFO"):
+            if node.op_type == "StreamingFIFO":
                 # if we have SLR assignment already. use that
                 if node_slr != -1:
                     continue
@@ -106,9 +101,8 @@ class Floorplan(Transformation):
         if unassigned_nodes > 0:
             warnings.warn(
                 str(unassigned_nodes)
-                + " nodes have no entry in the provided floorplan,"
-                + " SLR was set to "
-                + str(default_slr)
+                + " nodes have no entry in the provided floorplan "
+                + "and no default value was set"
             )
 
         # partition id generation
@@ -119,16 +113,18 @@ class Floorplan(Transformation):
         df_nodes = list(
             filter(lambda x: get_by_name(x.attribute, "backend") is not None, all_nodes)
         )
-        dma_nodes = list(filter(lambda x: x.op_type == "IODMA_hls", df_nodes))
+        dma_nodes = list(filter(lambda x: x.op_type == "IODMA", df_nodes))
         non_dma_nodes = list(filter(lambda x: x not in dma_nodes, df_nodes))
         dyn_tlastmarker_nodes = list(
             filter(
-                lambda x: x.op_type == "TLastMarker_hls"
+                lambda x: x.op_type == "TLastMarker"
                 and getCustomOp(x).get_nodeattr("DynIters") == "true",
                 non_dma_nodes,
             )
         )
-        non_dma_nodes = list(filter(lambda x: x not in dyn_tlastmarker_nodes, non_dma_nodes))
+        non_dma_nodes = list(
+            filter(lambda x: x not in dyn_tlastmarker_nodes, non_dma_nodes)
+        )
 
         for node in dma_nodes:
             node_inst = getCustomOp(node)
@@ -148,9 +144,8 @@ class Floorplan(Transformation):
                 node_inst.set_nodeattr("partition_id", partition_cnt)
                 partition_cnt += 1
                 continue
-
             elif not (
-                node.op_type.startswith("MVAU")
+                node.op_type == "StreamingFCLayer_Batch"
                 and node_inst.get_nodeattr("mem_mode") is not None
                 and node_inst.get_nodeattr("mem_mode") == "external"
             ):
@@ -163,18 +158,13 @@ class Floorplan(Transformation):
                 pre_inst = getCustomOp(pre_node)
                 pre_slr = pre_inst.get_nodeattr("slr")
                 if node_slr == pre_slr:
-                    axilite_intf_name = pre_inst.get_verilog_top_module_intf_names()["axilite"]
-                    if len(axilite_intf_name) != 0:
-                        node_inst.set_nodeattr("partition_id", partition_cnt)
-                        partition_cnt += 1
-                    else:
-                        partition_id = pre_inst.get_nodeattr("partition_id")
-                        node_inst.set_nodeattr("partition_id", partition_id)
-
-                else:
-                    # no matching, new partition
-                    node_inst.set_nodeattr("partition_id", partition_cnt)
-                    partition_cnt += 1
+                    partition_id = pre_inst.get_nodeattr("partition_id")
+                    node_inst.set_nodeattr("partition_id", partition_id)
+                    break
+            else:
+                # no matching, new partition
+                node_inst.set_nodeattr("partition_id", partition_cnt)
+                partition_cnt += 1
 
         # save the updated floorplan
         floorplan = model.analysis(floorplan_params)

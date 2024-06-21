@@ -1,4 +1,4 @@
-# Copyright (C) 2023, Advanced Micro Devices, Inc.
+# Copyright (c) 2020, Xilinx
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -27,24 +27,23 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import pytest
-
 import numpy as np
+
 from onnx import TensorProto, helper
-from qonnx.core.datatype import DataType
-from qonnx.core.modelwrapper import ModelWrapper
-from qonnx.custom_op.registry import getCustomOp
-from qonnx.transformation.general import GiveUniqueNodeNames
-from qonnx.util.basic import gen_finn_dt_tensor, qonnx_make_model
 
 import finn.core.onnx_exec as oxe
-from finn.analysis.fpgadataflow.exp_cycles_per_layer import exp_cycles_per_layer
+from finn.core.datatype import DataType
+from finn.core.modelwrapper import ModelWrapper
+from finn.transformation.fpgadataflow.prepare_ip import PrepareIP
+from finn.transformation.fpgadataflow.prepare_cppsim import PrepareCppSim
 from finn.transformation.fpgadataflow.compile_cppsim import CompileCppSim
 from finn.transformation.fpgadataflow.hlssynth_ip import HLSSynthIP
-from finn.transformation.fpgadataflow.prepare_cppsim import PrepareCppSim
-from finn.transformation.fpgadataflow.prepare_ip import PrepareIP
-from finn.transformation.fpgadataflow.prepare_rtlsim import PrepareRTLSim
 from finn.transformation.fpgadataflow.set_exec_mode import SetExecMode
-from finn.transformation.fpgadataflow.specialize_layers import SpecializeLayers
+from finn.transformation.general import GiveUniqueNodeNames
+from finn.transformation.fpgadataflow.prepare_rtlsim import PrepareRTLSim
+from finn.util.basic import gen_finn_dt_tensor
+from finn.custom_op.registry import getCustomOp
+from finn.analysis.fpgadataflow.exp_cycles_per_layer import exp_cycles_per_layer
 
 
 def make_addstreams_modelwrapper(ch, pe, idt):
@@ -53,7 +52,7 @@ def make_addstreams_modelwrapper(ch, pe, idt):
     outp = helper.make_tensor_value_info("outp", TensorProto.FLOAT, [1, ch])
 
     addstreams_node = helper.make_node(
-        "AddStreams",
+        "AddStreams_Batch",
         ["inp1", "inp2"],
         ["outp"],
         domain="finn.custom_op.fpgadataflow",
@@ -61,16 +60,12 @@ def make_addstreams_modelwrapper(ch, pe, idt):
         NumChannels=ch,
         PE=pe,
         inputDataType=idt.name,
-        preferred_impl_style="hls",
     )
     graph = helper.make_graph(
-        nodes=[addstreams_node],
-        name="graph",
-        inputs=[inp1, inp2],
-        outputs=[outp],
+        nodes=[addstreams_node], name="graph", inputs=[inp1, inp2], outputs=[outp],
     )
 
-    model = qonnx_make_model(graph, producer_name="addstreams-model")
+    model = helper.make_model(graph, producer_name="addstreams-model")
     model = ModelWrapper(model)
 
     model.set_tensor_datatype("inp1", idt)
@@ -84,14 +79,13 @@ def prepare_inputs(input1, input2):
 
 
 # data types
-@pytest.mark.parametrize("idt", [DataType["UINT4"], DataType["UINT8"]])
+@pytest.mark.parametrize("idt", [DataType.UINT4, DataType.UINT8])
 # channels
 @pytest.mark.parametrize("ch", [1, 64])
 # folding
 @pytest.mark.parametrize("fold", [-1, 2, 1])
 # execution mode
 @pytest.mark.parametrize("exec_mode", ["cppsim", "rtlsim"])
-@pytest.mark.fpgadataflow
 @pytest.mark.vivado
 def test_fpgadataflow_addstreams(idt, ch, fold, exec_mode):
     if fold == -1:
@@ -106,18 +100,6 @@ def test_fpgadataflow_addstreams(idt, ch, fold, exec_mode):
 
     model = make_addstreams_modelwrapper(ch, pe, idt)
 
-    # prepare input data
-    input_dict = prepare_inputs(x1, x2)
-    oshape = model.get_tensor_shape("outp")
-    y = x1 + x2
-    y_expected = y.reshape(oshape)
-
-    # test verification flow before specializing layer
-    y_produced = oxe.execute_onnx(model, input_dict)["outp"]
-    assert (y_produced == y_expected).all(), "Execution of hw layer failed"
-
-    model = model.transform(SpecializeLayers())
-
     if exec_mode == "cppsim":
         model = model.transform(PrepareCppSim())
         model = model.transform(CompileCppSim())
@@ -131,6 +113,12 @@ def test_fpgadataflow_addstreams(idt, ch, fold, exec_mode):
     else:
         raise Exception("Unknown exec_mode")
 
+    # prepare input data
+    input_dict = prepare_inputs(x1, x2)
+
+    oshape = model.get_tensor_shape("outp")
+    y = x1 + x2
+    y_expected = y.reshape(oshape)
     # execute model
     y_produced = oxe.execute_onnx(model, input_dict)["outp"]
     y_produced = y_produced.reshape(y_expected.shape)
@@ -138,7 +126,7 @@ def test_fpgadataflow_addstreams(idt, ch, fold, exec_mode):
     assert (y_produced == y_expected).all(), exec_mode + " failed"
 
     if exec_mode == "rtlsim":
-        node = model.get_nodes_by_op_type("AddStreams_hls")[0]
+        node = model.get_nodes_by_op_type("AddStreams_Batch")[0]
         inst = getCustomOp(node)
         cycles_rtlsim = inst.get_nodeattr("cycles_rtlsim")
         exp_cycles_dict = model.analysis(exp_cycles_per_layer)
