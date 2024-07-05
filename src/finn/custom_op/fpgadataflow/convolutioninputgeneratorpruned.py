@@ -30,31 +30,31 @@ import os
 
 import numpy as np
 
-from finn.core.datatype import DataType
-from finn.custom_op.fpgadataflow.hlscustomop import HLSCustomOp
-from finn.custom_op.general.im2col import compute_conv_output_dim
+from qonnx.core.datatype import DataType
+from finn.custom_op.fpgadataflow.hwcustomop import HWCustomOp
+from qonnx.custom_op.general.im2col import compute_conv_output_dim
 from onnx import TensorProto, helper
 from finn.util.data_packing import npy_to_rtlsim_input, rtlsim_output_to_npy
 
 
-class ConvolutionInputGeneratorSIMDPruned(HLSCustomOp):
+class ConvolutionInputGeneratorSIMDPruned(HWCustomOp):
     """Class that corresponds to one of the finn-hlslib ConvolutionInputGenerator
     (sliding window) function variants. Depending on the combination of
     attributes (e.g. depthwise or not, whether k % stride is 0) a different
     variant will be picked for the actual HLS implementation."""
 
-    def __init__(self, onnx_node):
-        super().__init__(onnx_node)
+    def __init__(self, onnx_node, **kwargs):
+        super().__init__(onnx_node, **kwargs)
 
     def get_nodeattr_types(self):
         my_attrs = {
-            "ConvKernelDim": ("i", True, 0),
+            "ConvKernelDim": ("ints", True, []),  # [H, W] = [Y, X]
             "IFMChannels": ("i", True, 0),
-            "IFMDim": ("i", True, 0),
-            "OFMDim": ("i", True, 0),
+            "IFMDim": ("ints", True, []),  # [H, W] = [Y, X]
+            "OFMDim": ("ints", True, []),  # [H, W] = [Y, X]
             "SIMD_in": ("i", True, 0),
             "SIMD_out": ("i", True, 0),
-            "Stride": ("i", True, 0),
+             "Stride": ("ints", True, [1, 1]),
             # FINN DataTypes for inputs, weights, outputs
             "inputDataType": ("s", True, ""),
             "outputDataType": ("s", True, ""),
@@ -68,37 +68,35 @@ class ConvolutionInputGeneratorSIMDPruned(HLSCustomOp):
         my_attrs.update(super().get_nodeattr_types())
         return my_attrs
 
-    def get_normal_input_shape(self):
-
-        ifm_dim = self.get_nodeattr("IFMDim")
+    def get_normal_input_shape(self, ind=0):
+        ifm_dim_h, ifm_dim_w = self.get_nodeattr("IFMDim")
         ifm_ch = self.get_nodeattr("IFMChannels")
-
-        ishape = (1, ifm_dim, ifm_dim, ifm_ch)
+        ishape = (1, ifm_dim_h, ifm_dim_w, ifm_ch)
         return ishape
 
-    def get_folded_input_shape(self):
-        ifm_dim = self.get_nodeattr("IFMDim")
+    def get_folded_input_shape(self, ind=0):
+        ifm_dim_h, ifm_dim_w = self.get_nodeattr("IFMDim")
         ifm_ch = self.get_nodeattr("IFMChannels")
-        simd = self.get_nodeattr("SIMD_in")
-        if not (ifm_ch % simd == 0):
-            raise ValueError(f"SIMD ({simd}) must divide IFMChannels ({ifm_ch})")
+        simd = self.get_nodeattr("SIMD")
+        assert ifm_ch % simd == 0, f"SIMD ({simd}) must divide IFMChannels ({ifm_ch})"
         wf = int(ifm_ch / simd)
-        folded_ishape = (1, ifm_dim, ifm_dim, wf, simd)
+        folded_ishape = (1, ifm_dim_h, ifm_dim_w, wf, simd)
         return folded_ishape
 
     def get_normal_output_shape(self):
-        k = self.get_nodeattr("ConvKernelDim")
-        ifm_dim = self.get_nodeattr("IFMDim")
+        k_h, k_w = self.get_nodeattr("ConvKernelDim")
+        ifm_dim_h, ifm_dim_w = self.get_nodeattr("IFMDim")
         ifm_ch = self.get_nodeattr("IFMChannels")
-        stride = self.get_nodeattr("Stride")
+        stride_h, stride_w = self.get_nodeattr("Stride")
+        dilation_h, dilation_w = self.get_nodeattr("Dilation")
         simd_in = self.get_nodeattr("SIMD_in")
         simd_out = self.get_nodeattr("SIMD_out")
-        num_cols = k * k * ifm_ch
+        num_cols = k_h * k_w * ifm_ch 
         num_cols_pruned = int(num_cols / simd_in * (simd_in - simd_out))
         pad = 0
-        ofm_dim = compute_conv_output_dim(ifm_dim, k, stride, pad)
-        oshape = (1, ofm_dim, ofm_dim, num_cols - num_cols_pruned)
-        #oshape = (1, ofm_dim, ofm_dim, k * k * ifm_ch)
+        ofm_dim_h = compute_conv_output_dim(ifm_dim_h, k_h, stride_h, pad, dilation_h)
+        ofm_dim_w = compute_conv_output_dim(ifm_dim_w, k_w, stride_w, pad, dilation_w)
+        oshape = (1, ofm_dim_h, ofm_dim_w, num_cols - num_cols_pruned)
         return oshape
 
     def get_folded_output_shape(self):
@@ -428,23 +426,27 @@ class ConvolutionInputGeneratorSIMDPruned(HLSCustomOp):
 # between the two layouts
 
 
-class ConvolutionInputGeneratorPruned(HLSCustomOp):
+class ConvolutionInputGeneratorPruned(HWCustomOp):
     """Class that corresponds to one of the finn-hlslib ConvolutionInputGenerator
     (sliding window) function variants. Depending on the combination of
     attributes (e.g. depthwise or not, whether k % stride is 0) a different
     variant will be picked for the actual HLS implementation."""
 
-    def __init__(self, onnx_node):
-        super().__init__(onnx_node)
+    def __init__(self, onnx_node, **kwargs):
+        super().__init__(onnx_node, **kwargs)
 
     def get_nodeattr_types(self):
         my_attrs = {
-            "ConvKernelDim": ("i", True, 0),
+            "ConvKernelDim": ("ints", True, []),  # [H, W] = [Y, X]
             "IFMChannels": ("i", True, 0),
-            "IFMDim": ("i", True, 0),
-            "OFMDim": ("i", True, 0),
+            "IFMDim": ("ints", True, []),  # [H, W] = [Y, X]
+            "OFMDim": ("ints", True, []),  # [H, W] = [Y, X]
             "SIMD": ("i", True, 0),
-            "Stride": ("i", True, 0),
+            "SIMD_in": ("i", True, 0),
+            "SIMD_out": ("i", True, 0),
+            "Stride": ("ints", True, [1, 1]),
+            # note: only dilation=1 supported for now
+            "Dilation": ("ints", True, [1, 1]),  # [H, W] = [Y, X]
             # FINN DataTypes for inputs, weights, outputs
             "inputDataType": ("s", True, ""),
             "outputDataType": ("s", True, ""),
@@ -460,50 +462,54 @@ class ConvolutionInputGeneratorPruned(HLSCustomOp):
         my_attrs.update(super().get_nodeattr_types())
         return my_attrs
 
-    def get_normal_input_shape(self):
-
-        ifm_dim = self.get_nodeattr("IFMDim")
+    def get_normal_input_shape(self, ind=0):
+        ifm_dim_h, ifm_dim_w = self.get_nodeattr("IFMDim")
         ifm_ch = self.get_nodeattr("IFMChannels")
-
-        ishape = (1, ifm_dim, ifm_dim, ifm_ch)
+        ishape = (1, ifm_dim_h, ifm_dim_w, ifm_ch)
         return ishape
 
-    def get_folded_input_shape(self):
-        ifm_dim = self.get_nodeattr("IFMDim")
+    def get_folded_input_shape(self, ind=0):
+        ifm_dim_h, ifm_dim_w = self.get_nodeattr("IFMDim")
         ifm_ch = self.get_nodeattr("IFMChannels")
         simd = self.get_nodeattr("SIMD")
         assert ifm_ch % simd == 0, "SIMD must divide IFMChannels"
         wf = int(ifm_ch / simd)
-        folded_ishape = (1, ifm_dim, ifm_dim, wf, simd)
+        folded_ishape = (1, ifm_dim_h, ifm_dim_w, wf, simd)
         return folded_ishape
 
     def get_normal_output_shape(self):
-        k = self.get_nodeattr("ConvKernelDim")
-        ifm_dim = self.get_nodeattr("IFMDim")
+        k_h, k_w = self.get_nodeattr("ConvKernelDim")
+        ifm_dim_h, ifm_dim_w = self.get_nodeattr("IFMDim")
         ifm_ch = self.get_nodeattr("IFMChannels")
-        stride = self.get_nodeattr("Stride")
+        stride_h, stride_w = self.get_nodeattr("Stride")
+        dilation_h, dilation_w = self.get_nodeattr("Dilation")
         simd = self.get_nodeattr("SIMD")
         NumColPruned = self.get_nodeattr("NumColPruned")
         pad = 0
-        ofm_dim = compute_conv_output_dim(ifm_dim, k, stride, pad)
-        oshape = (1, ofm_dim, ofm_dim, k * k * ifm_ch - int(NumColPruned*simd))
+        ofm_dim_h = compute_conv_output_dim(ifm_dim_h, k_h, stride_h, pad, dilation_h)
+        ofm_dim_w = compute_conv_output_dim(ifm_dim_w, k_w, stride_w, pad, dilation_w)
+        oshape = (1, ofm_dim_h, ofm_dim_w, k_h * k_w * ifm_ch - int(NumColPruned*simd))
         #oshape = (1, ofm_dim, ofm_dim, k * k * ifm_ch)
         return oshape
 
     def get_folded_output_shape(self):
-        k = self.get_nodeattr("ConvKernelDim")
-        ifm_dim = self.get_nodeattr("IFMDim")
+        k_h, k_w = self.get_nodeattr("ConvKernelDim")
+        ifm_dim_h, ifm_dim_w = self.get_nodeattr("IFMDim")
         ifm_ch = self.get_nodeattr("IFMChannels")
-        stride = self.get_nodeattr("Stride")
+        stride_h, stride_w = self.get_nodeattr("Stride")
+        dilation_h, dilation_w = self.get_nodeattr("Dilation")
         simd = self.get_nodeattr("SIMD")
         NumColPruned = self.get_nodeattr("NumColPruned")
         pad = 0
-        ofm_dim = compute_conv_output_dim(ifm_dim, k, stride, pad)
+        ofm_dim_h = compute_conv_output_dim(ifm_dim_h, k_h, stride_h, pad, dilation_h)
+        ofm_dim_w = compute_conv_output_dim(ifm_dim_w, k_w, stride_w, pad, dilation_w)
         assert ifm_ch % simd == 0, "SIMD must divide IFMChannels"
-        assert k % stride == 0, "stride must divide kernel size k"
-        wf = int((k * k * ifm_ch) // simd) - NumColPruned
-        #wf = int((k * k * ifm_ch) // simd)
-        folded_oshape = (1, ofm_dim, ofm_dim, wf, simd)
+        if self.use_parallel_window_output():
+            wf = int((ifm_ch) // simd)  - NumColPruned
+            folded_oshape = (1, ofm_dim_h, ofm_dim_w, wf, k_h * k_w * simd)
+        else:
+            wf = int((k_h * k_w * ifm_ch) // simd)  - NumColPruned
+            folded_oshape = (1, ofm_dim_h, ofm_dim_w, wf, simd)
         return folded_oshape
 
     def make_shape_compatible_op(self, model):
