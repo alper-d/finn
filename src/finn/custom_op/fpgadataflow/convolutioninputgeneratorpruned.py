@@ -171,7 +171,7 @@ class ConvolutionInputGeneratorSIMDPruned(HWCustomOp):
         in_width = simd * ibits
         return in_width
 
-    def get_outstream_width(self):
+    def get_outstream_width(self, ind=0):
         """Returns stream width, for the output, normally equal to the input width for the sliding window function
         , but not in this case since some data was pruned"""
         ibits = self.get_input_datatype().bitwidth()
@@ -570,7 +570,7 @@ class ConvolutionInputGeneratorPruned(HWCustomOp):
         in_width = simd * ibits
         return in_width
 
-    def get_outstream_width(self):
+    def get_outstream_width(self, ind=0):
         """Returns stream width, input and output stream width are equal for
         the sliding window function, so the function to determine the input
         stream width can be reused."""
