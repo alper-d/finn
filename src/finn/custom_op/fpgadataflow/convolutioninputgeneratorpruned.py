@@ -29,7 +29,7 @@
 import os
 
 import numpy as np
-
+import warnings
 from qonnx.core.datatype import DataType
 from finn.custom_op.fpgadataflow.hwcustomop import HWCustomOp
 from qonnx.custom_op.general.im2col import compute_conv_output_dim

@@ -42,7 +42,7 @@ from finn.custom_op.fpgadataflow.hlsbackend import HLSBackend
 from finn.util.data_packing import npy_to_rtlsim_input, rtlsim_output_to_npy
 import os
 from qonnx.core.datatype import DataType
-
+import warnings
 
 
 class ConvolutionInputGeneratorSIMDPruned_hls(ConvolutionInputGeneratorSIMDPruned, HLSBackend):
@@ -484,6 +484,37 @@ class ConvolutionInputGeneratorPruned_hls(ConvolutionInputGeneratorPruned, HLSBa
         wf = int(ifm_ch / simd)
         folded_ishape = (1, ifm_dim_h, ifm_dim_w, wf, simd)
         return folded_ishape
+
+    def use_parallel_window_output(self):
+        if not self.get_nodeattr("is1D"):
+            return False
+        # If 1D, check if simple "ConvolutionInputGenerator_1D_parallel" variant can be used to
+        # feed window in parallel to the following layer, enabling full SIMD unfolding.
+        stride = self.get_nodeattr("Stride")
+        dilation = self.get_nodeattr("Dilation")
+        stride_h, stride_w = stride
+        dilation_h, dilation_w = dilation
+        ram_style = self.get_nodeattr("ram_style")
+
+        fully_unfolded = self.get_nodeattr("SIMD") == self.get_nodeattr("IFMChannels")
+        non_dws = self.get_nodeattr("depthwise") == 0
+        no_stride = stride_h == 1 and stride_w == 1
+        no_dilation = dilation_h == 1 and dilation_w == 1
+        supported_ram_style = ram_style in ["auto", "distributed"]
+        if self.get_nodeattr("parallel_window") == 1:
+            if fully_unfolded and non_dws and no_stride and no_dilation and supported_ram_style:
+                return True
+            else:
+                warnings.warn(
+                    "{}: Parallel window output variant is not supported for this node,\
+                     please inspect requirements in use_parallel_window_output method\
+                     of the custom_op".format(
+                        self.onnx_node.name
+                    )
+                )
+                return False
+        else:
+            return False
 
     def get_normal_output_shape(self):
         k_h, k_w = self.get_nodeattr("ConvKernelDim")
