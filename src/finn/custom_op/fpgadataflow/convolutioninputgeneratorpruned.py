@@ -64,6 +64,12 @@ class ConvolutionInputGeneratorSIMDPruned(HWCustomOp):
             # distributed -- use LUTRAM
             # ultra -- use URAM
             "ram_style": ("s", False, "distributed"),
+            "parallel_window": ("i", False, 0, {0, 1}),
+            # 1D (True) or 2D (False) spatial data
+            "is1D": ("i", False, 0),
+            # Enable reprogrammable implementation to change FM dimensions,
+            # stride, or dilation during runtime (requires parallel_window = 0)
+            "dynamic_mode": ("i", False, 0, {0, 1}),
         }
         my_attrs.update(super().get_nodeattr_types())
         return my_attrs
@@ -458,6 +464,12 @@ class ConvolutionInputGeneratorPruned(HWCustomOp):
             "ram_style": ("s", False, "distributed"),
             # Stuff from yours truly
             "NumColPruned": ("i", True, 1),
+            "parallel_window": ("i", False, 0, {0, 1}),
+            # 1D (True) or 2D (False) spatial data
+            "is1D": ("i", False, 0),
+            # Enable reprogrammable implementation to change FM dimensions,
+            # stride, or dilation during runtime (requires parallel_window = 0)
+            "dynamic_mode": ("i", False, 0, {0, 1}),
         }
         my_attrs.update(super().get_nodeattr_types())
         return my_attrs
