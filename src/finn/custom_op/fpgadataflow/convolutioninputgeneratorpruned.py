@@ -161,7 +161,7 @@ class ConvolutionInputGeneratorSIMDPruned(HWCustomOp):
         """Returns FINN DataType of output."""
         return DataType[self.get_nodeattr("outputDataType")]
 
-    def get_instream_width(self):
+    def get_instream_width(self, ind=0):
         """Returns stream width, for the input, normally equal to the output width for the sliding window function
         , but not in this case since some data was pruned"""
         ibits = self.get_input_datatype().bitwidth()
@@ -560,7 +560,7 @@ class ConvolutionInputGeneratorPruned(HWCustomOp):
         """Returns FINN DataType of output."""
         return DataType[self.get_nodeattr("outputDataType")]
 
-    def get_instream_width(self):
+    def get_instream_width(self, ind=0):
         """Returns stream width, input and output stream width are equal for
         the sliding window function"""
         ibits = self.get_input_datatype().bitwidth()
