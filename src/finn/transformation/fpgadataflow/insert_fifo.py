@@ -111,6 +111,7 @@ class InsertFIFO(Transformation):
                     consumer = consumers[0]
                     if _suitable_node(consumer) is True:
                         n0 = getCustomOp(first_node)
+                        print(n0)
                         # determine fifo node attributes
                         fld_shape = n0.get_folded_output_shape()
                         dtype = n0.get_output_datatype()
@@ -118,10 +119,13 @@ class InsertFIFO(Transformation):
                         # check if folded_shape of output of first node and
                         # input of the second node is equal
                         n1 = getCustomOp(consumer)
+                        print(n1)
                         for idx, inp in enumerate(consumer.input):
                             if inp == output_name:
                                 fld_shape_2 = n1.get_folded_input_shape(ind=idx)
                                 idx_inp = idx
+                        print(fld_shape)
+                        print(fld_shape_2)
                         assert _suitable_folded_shapes(
                             fld_shape, fld_shape_2
                         ), """The

@@ -287,7 +287,7 @@ class ConvolutionInputGeneratorSIMDPruned_hls(ConvolutionInputGeneratorSIMDPrune
             #define Input_precision1 {}\n #define IFMDim1 {}\n
             #define OFMDim1 {}\n #define SIMD_in1 {}\n #define SIMD_out1 {}\n
             #define Stride1 {}\n #define numReps {}\n""".format(
-                self.get_nodeattr("ConvKernelDim"),
+                self.get_nodeattr("ConvKernelDim")[0],
                 self.get_nodeattr("IFMChannels"),
                 self.get_input_datatype().bitwidth(),
                 self.get_nodeattr("IFMDim"),
@@ -299,7 +299,7 @@ class ConvolutionInputGeneratorSIMDPruned_hls(ConvolutionInputGeneratorSIMDPrune
             )
         # modifications from yours truly
         # ToDo: This might be better off somewhere else in the code? Currently it is just in a very convinient place
-        numCols = (self.get_nodeattr("ConvKernelDim") ** 2) * self.get_nodeattr("IFMChannels") / SIMD_in
+        numCols = (self.get_nodeattr("ConvKernelDim")[0] * self.get_nodeattr("ConvKernelDim")[1]) * self.get_nodeattr("IFMChannels") / SIMD_in
         numCols = int(numCols)
         # ToDo: This is somewhat ugly, make it nicer with actual formating
         define_string += """\nnamespace PARAM{static const bool SIMD_pruning_mask["""
@@ -362,6 +362,7 @@ class ConvolutionInputGeneratorSIMDPruned_hls(ConvolutionInputGeneratorSIMDPrune
             "ultra": "ap_resource_uram()",
         }
         hls_ram_style = map_to_hls_ram_style[ram_style]
+        swu_variant = self.get_swu_variant()
         hls_call = node.op_type
         # check if non optimized ConvolutionInputGenerator is needed
         k = self.get_nodeattr("ConvKernelDim")
@@ -444,30 +445,34 @@ class ConvolutionInputGeneratorPruned_hls(ConvolutionInputGeneratorPruned, HLSBa
         super().__init__(onnx_node, **kwargs)
 
     def get_nodeattr_types(self):
-        my_attrs = {
-            "ConvKernelDim": ("ints", True, []),  # [H, W] = [Y, X]
-            "IFMChannels": ("i", True, 0),
-            "IFMDim": ("ints", True, []),  # [H, W] = [Y, X]
-            "OFMDim": ("ints", True, []),  # [H, W] = [Y, X]
-            "SIMD": ("i", True, 0),
-            "SIMD_in": ("i", True, 0),
-            "SIMD_out": ("i", True, 0),
-            "Stride": ("ints", True, [1, 1]),
-            # note: only dilation=1 supported for now
-            "Dilation": ("ints", True, [1, 1]),  # [H, W] = [Y, X]
-            # FINN DataTypes for inputs, weights, outputs
-            "inputDataType": ("s", True, ""),
-            "outputDataType": ("s", True, ""),
-            # FPGA resource type for ConvolutionInputGenerator input buffer
-            # auto -- let Vivado HLS decide
-            # block -- use BRAM
-            # distributed -- use LUTRAM
-            # ultra -- use URAM
-            "ram_style": ("s", False, "distributed"),
-            # Stuff from yours truly
-            "NumColPruned": ("i", True, 1),
-        }
-        my_attrs.update(super().get_nodeattr_types())
+        # my_attrs = {
+        #     "ConvKernelDim": ("ints", True, []),  # [H, W] = [Y, X]
+        #     "IFMChannels": ("i", True, 0),
+        #     "IFMDim": ("ints", True, []),  # [H, W] = [Y, X]
+        #     "OFMDim": ("ints", True, []),  # [H, W] = [Y, X]
+        #     "SIMD": ("i", True, 0),
+        #     "SIMD_in": ("i", True, 0),
+        #     "SIMD_out": ("i", True, 0),
+        #     "Stride": ("ints", True, [1, 1]),
+        #     # note: only dilation=1 supported for now
+        #     "Dilation": ("ints", True, [1, 1]),  # [H, W] = [Y, X]
+        #     # FINN DataTypes for inputs, weights, outputs
+        #     "inputDataType": ("s", True, ""),
+        #     "outputDataType": ("s", True, ""),
+        #     # FPGA resource type for ConvolutionInputGenerator input buffer
+        #     # auto -- let Vivado HLS decide
+        #     # block -- use BRAM
+        #     # distributed -- use LUTRAM
+        #     # ultra -- use URAM
+        #     "ram_style": ("s", False, "distributed"),
+        #     # Stuff from yours truly
+        #     "NumColPruned": ("i", True, 1),
+        # }
+        # my_attrs.update(super().get_nodeattr_types())
+        # return my_attrs
+        my_attrs = {}
+        my_attrs.update(ConvolutionInputGeneratorPruned.get_nodeattr_types(self))
+        my_attrs.update(HLSBackend.get_nodeattr_types(self))
         return my_attrs
 
     def get_normal_input_shape(self, ind=0):
@@ -549,6 +554,12 @@ class ConvolutionInputGeneratorPruned_hls(ConvolutionInputGeneratorPruned, HLSBa
         else:
             wf = int((k_h * k_w * ifm_ch) // simd)  - NumColPruned
             folded_oshape = (1, ofm_dim_h, ofm_dim_w, wf, simd)
+        print ("simd", simd)
+        print("ifm_ch", ifm_ch)
+        print("NumColPruned", NumColPruned)
+        print("k_h, k_w ", k_h, k_w)
+        print("wf", wf)
+        print("self.use_parallel_window_output():", self.use_parallel_window_output())
         return folded_oshape
 
     def make_shape_compatible_op(self, model):
@@ -716,7 +727,7 @@ class ConvolutionInputGeneratorPruned_hls(ConvolutionInputGeneratorPruned, HLSBa
             )
         # modifications from yours truly
         # ToDo: This might be better off somewhere else in the code? Currently it is just in a very convinient place
-        numCols = (self.get_nodeattr("ConvKernelDim") ** 2) * self.get_nodeattr("IFMChannels") / self.get_nodeattr(
+        numCols = (self.get_nodeattr("ConvKernelDim")[0] * self.get_nodeattr("ConvKernelDim")[1]) * self.get_nodeattr("IFMChannels") / self.get_nodeattr(
             "SIMD")
         numCols = int(numCols)
         # ToDo: This is somewhat ugly, make it nicer with actual formating
@@ -781,8 +792,8 @@ class ConvolutionInputGeneratorPruned_hls(ConvolutionInputGeneratorPruned, HLSBa
 
         self.code_gen_dict["$DOCOMPUTE$"] = [
             """{}<ConvKernelDim1, IFMChannels1, Input_precision1, IFMDim1,
-                OFMDim1, SIMD1, Stride1> (in0, out, numReps, PARAM::ColsToPrune, {});""".format(
-                hls_call, hls_ram_style
+                OFMDim1, SIMD1, Stride1> (in0_{}, out_{}, numReps, PARAM::ColsToPrune, {});""".format(
+                hls_call, self.hls_sname(), self.hls_sname(), hls_ram_style
             )
         ]
 

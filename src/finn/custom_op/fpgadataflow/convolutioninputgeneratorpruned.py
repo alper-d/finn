@@ -285,7 +285,8 @@ class ConvolutionInputGeneratorSIMDPruned(HWCustomOp):
             #define Input_precision1 {}\n #define IFMDim1 {}\n
             #define OFMDim1 {}\n #define SIMD_in1 {}\n #define SIMD_out1 {}\n
             #define Stride1 {}\n #define numReps {}\n""".format(
-                self.get_nodeattr("ConvKernelDim"),
+                #TODO cover nonsquare
+                self.get_nodeattr("ConvKernelDim")[0],
                 self.get_nodeattr("IFMChannels"),
                 self.get_input_datatype().bitwidth(),
                 self.get_nodeattr("IFMDim"),
@@ -297,7 +298,7 @@ class ConvolutionInputGeneratorSIMDPruned(HWCustomOp):
             )
         # modifications from yours truly
         # ToDo: This might be better off somewhere else in the code? Currently it is just in a very convinient place
-        numCols = (self.get_nodeattr("ConvKernelDim") ** 2) * self.get_nodeattr("IFMChannels") / SIMD_in
+        numCols = (self.get_nodeattr("ConvKernelDim")[0] * self.get_nodeattr("ConvKernelDim")[1]) * self.get_nodeattr("IFMChannels") / SIMD_in
         numCols = int(numCols)
         # ToDo: This is somewhat ugly, make it nicer with actual formating
         define_string += """\nnamespace PARAM{static const bool SIMD_pruning_mask["""
@@ -432,7 +433,7 @@ class ConvolutionInputGeneratorSIMDPruned(HWCustomOp):
 # between the two layouts
 
 
-class ConvolutionInputGeneratorPruned(HWCustomOp):
+class ConvolutionInputGeneratorPruned_hls(HWCustomOp):
     """Class that corresponds to one of the finn-hlslib ConvolutionInputGenerator
     (sliding window) function variants. Depending on the combination of
     attributes (e.g. depthwise or not, whether k % stride is 0) a different
@@ -678,7 +679,7 @@ class ConvolutionInputGeneratorPruned(HWCustomOp):
             #define Input_precision1 {}\n #define IFMDim1 {}\n
             #define OFMDim1 {}\n #define SIMD1 {}\n
             #define Stride1 {}\n #define numReps {}\n""".format(
-                self.get_nodeattr("ConvKernelDim"),
+                self.get_nodeattr("ConvKernelDim")[0],
                 self.get_nodeattr("IFMChannels"),
                 self.get_input_datatype().bitwidth(),
                 self.get_nodeattr("IFMDim"),
@@ -689,7 +690,7 @@ class ConvolutionInputGeneratorPruned(HWCustomOp):
             )
         # modifications from yours truly
         # ToDo: This might be better off somewhere else in the code? Currently it is just in a very convinient place
-        numCols = (self.get_nodeattr("ConvKernelDim") ** 2) * self.get_nodeattr("IFMChannels") / self.get_nodeattr(
+        numCols = (self.get_nodeattr("ConvKernelDim")[0] * self.get_nodeattr("ConvKernelDim")[1]) * self.get_nodeattr("IFMChannels") / self.get_nodeattr(
             "SIMD")
         numCols = int(numCols)
         # ToDo: This is somewhat ugly, make it nicer with actual formating

@@ -235,7 +235,7 @@ class InferConvInpGenSIMDPruned(Transformation):
 class InferConvInpGenPruned(Transformation):
     """Convert Im2Col layers to ConvolutionInputGenerator layers."""
 
-    def __init__(self, pruning_ratio, adjust_following_MVAU=False, SIMD_list=None):
+    def __init__(self, pruning_ratio, adjust_following_MVAU=True, SIMD_list=None):
         super().__init__()
         self.adjust_following_MVAU = adjust_following_MVAU
         self.SIMD_list = SIMD_list
@@ -362,6 +362,17 @@ class InferConvInpGenPruned(Transformation):
                     # Make sure that the new shape isn't smaller than possible
                     assert new_shape[-1] >= self.SIMD_list[layer_ix], "Can't prune so many cols that no data is transmitted."
                     model.set_tensor_shape(i2c_output, new_shape)
+                    
+                    #- old_shape_next_node = model.get_tensor_shape(graph.node[node_ind].input[1])
+                    #- print("old_shape_next_node", old_shape_next_node)
+                    #- old_shape_next_node[0] = new_shape[-1]
+                    #- print("graph.node[node_ind]", graph.node[node_ind])
+                    #- print(graph.node["sdfwfsdfsdfsdf"])
+                    #- model.set_tensor_shape(graph.node[node_ind].input[1], old_shape_next_node)
+                    print(i2c_output)
+                    print(new_shape)
+                    print("[ofm_dim_h, ofm_dim_w]", ofm_dim_h, ofm_dim_w)
+                    print("ifm_ch", ifm_ch)
                     ConvInpGen_node = helper.make_node(
                         "ConvolutionInputGeneratorPruned",
                         [ConvInpGen_input],
@@ -379,15 +390,18 @@ class InferConvInpGenPruned(Transformation):
                         outputDataType=dt.name,
                         depthwise=depthwise,
                         NumColPruned=NumColPruned,
+                        name="ConvolutionInputGeneratorPruned_" + n.name,
                     )
                     graph.node.insert(ConvInpGen_node_idx, ConvInpGen_node)
                     # Make sure that the next StreamingFCLayer_Batch node is adjusted
                     if self.adjust_following_MVAU:
+                        print("HEREEEE")
                         assert type(self.SIMD_list) == type([1]), "SIMD_list must be of type {}, not {}".format(
                             type([1, ]), type(self.SIMD_list))
                         next_node = graph.node[node_ind+1]
-                        if next_node.op_type == "StreamingFCLayer_Batch":
+                        if next_node.op_type == "MVAU":
                             # edit next node
+                            print("HEREEEE1")
                             node_op = getCustomOp(next_node)
                             # adjust matrix width
                             mw = node_op.get_nodeattr("MW")
@@ -1705,6 +1719,7 @@ class InferBinaryMatrixVectorActivation(Transformation):
                 wdt = DataType["BINARY"]
                 mm_output = n.output[0]
                 W = model.get_initializer(mm_weight)
+                print("W.shape", W.shape)
                 # extract weight shape, note that ONNX and finn-hlslib
                 # make different assumptions about dim order here
                 # ONNX assumes W has (in, out) shape
@@ -1743,6 +1758,13 @@ class InferBinaryMatrixVectorActivation(Transformation):
                     model.set_tensor_shape(mm_input, mm_in_shape)
                     model.set_tensor_shape(mt_output, mt_out_shape)
                     # create and insert new MatrixVectorActivation node
+                    print("line 1752")
+                    print("MW", mw)
+                    print("MH", mh)
+                    print("SIMD", simd)
+                    print("PE", pe)
+                    print("[mm_input, mm_weight, mt_thres]", [mm_input, mm_weight, mt_thres])
+                    print("[mt_output]", [mt_output])
                     new_node = helper.make_node(
                         "MVAU",
                         [mm_input, mm_weight, mt_thres],
@@ -1773,6 +1795,13 @@ class InferBinaryMatrixVectorActivation(Transformation):
                     model.set_tensor_shape(mm_input, mm_in_shape)
                     model.set_tensor_shape(mm_output, mm_out_shape)
                     # create and insert new MatrixVectorActivation node
+                    print("line 1790")
+                    print("MW", mw)
+                    print("MH", mh)
+                    print("SIMD", simd)
+                    print("PE", pe)
+                    print("[mm_input, mm_weight, mt_thres]", [mm_input, mm_weight, mt_thres])
+                    print("[mt_output]", [mt_output])
                     new_node = helper.make_node(
                         "MVAU",
                         [mm_input, mm_weight],
@@ -1877,6 +1906,13 @@ class InferQuantizedMatrixVectorActivation(Transformation):
                             # binary->bipolar is achieved by reinterpretation
                             actval = 0
                         # create and insert new MatrixVectorActivation node
+                        print("line 1901")
+                        print("MW", mw)
+                        print("MH", mh)
+                        print("SIMD", simd)
+                        print("PE", pe)
+                        print("[mm_input, mm_weight, mt_thres]", [mm_input, mm_weight, mt_thres])
+                        print("[mt_output]", [mt_output])
                         new_node = helper.make_node(
                             "MVAU",
                             [mm_input, mm_weight, mt_thres],
@@ -1907,6 +1943,13 @@ class InferQuantizedMatrixVectorActivation(Transformation):
                         model.set_tensor_shape(mm_input, mm_in_shape)
                         model.set_tensor_shape(mm_output, mm_out_shape)
                         # create and insert new MatrixVectorActivation node
+                        print("line 1938")
+                        print("MW", mw)
+                        print("MH", mh)
+                        print("SIMD", simd)
+                        print("PE", pe)
+                        print("[mm_input, mm_weight, mt_thres]", [mm_input, mm_weight, mt_thres])
+                        print("[mt_output]", [mt_output])
                         new_node = helper.make_node(
                             "MVAU",
                             [mm_input, mm_weight],
