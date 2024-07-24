@@ -325,32 +325,6 @@ class ConvolutionInputGeneratorSIMDPruned_hls(ConvolutionInputGeneratorSIMDPrune
             define_string
         ]
 
-    def read_npy_data(self):
-        code_gen_dir = self.get_nodeattr("code_gen_dir_cppsim")
-        dtype = self.get_input_datatype()
-        if dtype == DataType.BIPOLAR:
-            # use binary for bipolar storage
-            dtype = DataType.BINARY
-        elem_bits = dtype.bitwidth()
-        packed_bits = self.get_instream_width()
-        packed_hls_type = "ap_uint<%d>" % packed_bits
-        elem_hls_type = dtype.get_hls_datatype_str()
-        npy_type = "float"
-        npy_in = "%s/input_0.npy" % code_gen_dir
-        self.code_gen_dict["$READNPYDATA$"] = []
-        self.code_gen_dict["$READNPYDATA$"].append(
-            'npy2apintstream<%s, %s, %d, %s>("%s", in0);'
-            % (packed_hls_type, elem_hls_type, elem_bits, npy_type, npy_in)
-        )
-
-    def strm_decl(self):
-        self.code_gen_dict["$STREAMDECLARATIONS$"] = []
-        self.code_gen_dict["$STREAMDECLARATIONS$"].append(
-            'hls::stream<ap_uint<{}>> in0 ("in0");'.format(self.get_instream_width())
-        )
-        self.code_gen_dict["$STREAMDECLARATIONS$"].append(
-            'hls::stream<ap_uint<{}>> out ("out");'.format(self.get_outstream_width())
-        )
 
     def docompute(self):
         node = self.onnx_node
@@ -413,12 +387,6 @@ class ConvolutionInputGeneratorSIMDPruned_hls(ConvolutionInputGeneratorSIMDPrune
             )
         ]
 
-    def pragmas(self):
-        self.code_gen_dict["$PRAGMAS$"] = ["#pragma HLS INTERFACE axis port=in0"]
-        self.code_gen_dict["$PRAGMAS$"].append("#pragma HLS INTERFACE axis port=out")
-        self.code_gen_dict["$PRAGMAS$"].append(
-            "#pragma HLS INTERFACE ap_ctrl_none port=return"
-        )
 
 
 
@@ -711,6 +679,24 @@ class ConvolutionInputGeneratorPruned_hls(ConvolutionInputGeneratorPruned, HLSBa
 
     def defines(self, var):
         numReps = 1
+        is1D = self.get_nodeattr("is1D")
+        simd = self.get_nodeattr("SIMD")
+        ifm_precision = self.get_input_datatype().bitwidth()
+        if not is1D:
+            ifm_dim = self.get_nodeattr("IFMDim")[0]
+            ifm_ch = self.get_nodeattr("IFMChannels")
+            ofm_dim = self.get_nodeattr("OFMDim")[0]
+            k = self.get_nodeattr("ConvKernelDim")[0]
+            stride = self.get_nodeattr("Stride")[0]
+        else:
+            (
+                ifm_ch,
+                [ifm_dim_h, ifm_dim_w],
+                [ofm_dim_h, ofm_dim_w],
+                [k_h, k_w],
+                [stride_h, stride_w],
+                [dilation_h, dilation_w],
+            ) = self.get_1d_conv_attrs_normalized()
         # Original string
         define_string = """#define ConvKernelDim1 {}\n #define IFMChannels1 {}\n
             #define Input_precision1 {}\n #define IFMDim1 {}\n
@@ -727,6 +713,15 @@ class ConvolutionInputGeneratorPruned_hls(ConvolutionInputGeneratorPruned, HLSBa
             )
         # modifications from yours truly
         # ToDo: This might be better off somewhere else in the code? Currently it is just in a very convinient place
+        #alper update
+        define_string = """#define ConvKernelDim1 {}\n #define IFMChannels1 {}\n
+            #define Input_precision1 {}\n #define IFMDim1 {}\n
+            #define OFMDim1 {}\n #define SIMD1 {}\n
+            #define Stride1 {}\n #define numReps {}""".format(
+                k, ifm_ch, ifm_precision, ifm_dim, ofm_dim, simd, stride, numReps
+            )
+        #alper update
+
         numCols = (self.get_nodeattr("ConvKernelDim")[0] * self.get_nodeattr("ConvKernelDim")[1]) * self.get_nodeattr("IFMChannels") / self.get_nodeattr(
             "SIMD")
         numCols = int(numCols)
@@ -748,32 +743,6 @@ class ConvolutionInputGeneratorPruned_hls(ConvolutionInputGeneratorPruned, HLSBa
             define_string
         ]
 
-    def read_npy_data(self):
-        code_gen_dir = self.get_nodeattr("code_gen_dir_cppsim")
-        dtype = self.get_input_datatype()
-        if dtype == DataType.BIPOLAR:
-            # use binary for bipolar storage
-            dtype = DataType.BINARY
-        elem_bits = dtype.bitwidth()
-        packed_bits = self.get_instream_width()
-        packed_hls_type = "ap_uint<%d>" % packed_bits
-        elem_hls_type = dtype.get_hls_datatype_str()
-        npy_type = "float"
-        npy_in = "%s/input_0.npy" % code_gen_dir
-        self.code_gen_dict["$READNPYDATA$"] = []
-        self.code_gen_dict["$READNPYDATA$"].append(
-            'npy2apintstream<%s, %s, %d, %s>("%s", in0);'
-            % (packed_hls_type, elem_hls_type, elem_bits, npy_type, npy_in)
-        )
-
-    def strm_decl(self):
-        self.code_gen_dict["$STREAMDECLARATIONS$"] = []
-        self.code_gen_dict["$STREAMDECLARATIONS$"].append(
-            'hls::stream<ap_uint<{}>> in0 ("in0");'.format(self.get_instream_width())
-        )
-        self.code_gen_dict["$STREAMDECLARATIONS$"].append(
-            'hls::stream<ap_uint<{}>> out ("out");'.format(self.get_outstream_width())
-        )
 
     def docompute(self):
         node = self.onnx_node
@@ -800,9 +769,9 @@ class ConvolutionInputGeneratorPruned_hls(ConvolutionInputGeneratorPruned, HLSBa
     def dataoutstrm(self):
         code_gen_dir = self.get_nodeattr("code_gen_dir_cppsim")
         dtype = self.get_output_datatype()
-        if dtype == DataType.BIPOLAR:
+        if dtype == DataType["BIPOLAR"]:
             # use binary for bipolar storage
-            dtype = DataType.BINARY
+            dtype = DataType["BINARY"]
         elem_bits = dtype.bitwidth()
         packed_bits = self.get_outstream_width()
         packed_hls_type = "ap_uint<%d>" % packed_bits
@@ -811,16 +780,25 @@ class ConvolutionInputGeneratorPruned_hls(ConvolutionInputGeneratorPruned, HLSBa
         npy_out = "%s/output.npy" % code_gen_dir
         oshape = self.get_folded_output_shape()
         oshape_cpp_str = str(oshape).replace("(", "{").replace(")", "}")
+        if self.use_parallel_window_output():
+            # pass the number of pixels in the folded output to apintstream2npy, needed
+            # to unpack the ouput correctly and reverse only the inner SIMD dimension
+            k_h, k_w = self.get_nodeattr("ConvKernelDim")
+            multi_pixel_out = k_h * k_w
+        else:
+            multi_pixel_out = 1
 
         self.code_gen_dict["$DATAOUTSTREAM$"] = [
-            'apintstream2npy<%s, %s, %d, %s>(out, %s, "%s");'
+            'apintstream2npy<%s, %s, %d, %s>(out_%s, %s, "%s", true, 1, %d);'
             % (
                 packed_hls_type,
                 elem_hls_type,
                 elem_bits,
                 npy_type,
+                self.hls_sname(),
                 oshape_cpp_str,
                 npy_out,
+                multi_pixel_out,
             )
         ]
 
@@ -828,16 +806,19 @@ class ConvolutionInputGeneratorPruned_hls(ConvolutionInputGeneratorPruned, HLSBa
         self.code_gen_dict["$SAVEASCNPY$"] = []
 
     def blackboxfunction(self):
-        self.code_gen_dict["$BLACKBOXFUNCTION$"] = [
-            """void {}(hls::stream<ap_uint<SIMD1*Input_precision1>> &in0,
-                hls::stream<ap_uint<SIMD1*Input_precision1>> &out)""".format(
-                self.onnx_node.name
-            )
-        ]
+        if self.use_parallel_window_output():
+            self.code_gen_dict["$BLACKBOXFUNCTION$"] = [
+                """void {}(hls::stream<ap_uint<SIMD1*Input_precision1>> &in0_{},
+                    hls::stream<ap_uint<ConvKernelDim1_x*SIMD1*Input_precision1>>
+                    &out_{})""".format(
+                    self.onnx_node.name, self.hls_sname(), self.hls_sname()
+                )
+            ]
+        else:
+            self.code_gen_dict["$BLACKBOXFUNCTION$"] = [
+                """void {}(hls::stream<ap_uint<SIMD1*Input_precision1>> &in0_{},
+                    hls::stream<ap_uint<SIMD1*Input_precision1>> &out_{})""".format(
+                    self.onnx_node.name, self.hls_sname(), self.hls_sname()
+                )
+            ]
 
-    def pragmas(self):
-        self.code_gen_dict["$PRAGMAS$"] = ["#pragma HLS INTERFACE axis port=in0"]
-        self.code_gen_dict["$PRAGMAS$"].append("#pragma HLS INTERFACE axis port=out")
-        self.code_gen_dict["$PRAGMAS$"].append(
-            "#pragma HLS INTERFACE ap_ctrl_none port=return"
-        )
